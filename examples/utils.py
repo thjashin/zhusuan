@@ -107,3 +107,66 @@ def save_image_collections(x, filename, shape=(10, 10), scale_each=False,
                 ret[i * h:(i + 1) * h, j * w:(j + 1) * w, :] = x[i * c + j]
     ret = ret.squeeze()
     io.imsave(filename, ret)
+
+
+def save_contrast_image_collections(x1, x2, filename, shape=[10, 10],
+                                    scale_each=False, transpose=False,
+                                    along_col=True):
+    """
+    :param x1: uint8 numpy array
+        Input image collections. (number_of_images, rows, columns, channels) or
+        (number_of_images, channels, rows, columns)
+    :param x2: uint8 numpy array
+        Input image collections. (number_of_images, rows, columns, channels) or
+        (number_of_images, channels, rows, columns)
+    :param shape: tuple
+        The shape of final big images.
+    :param scale_each: bool
+        If true, rescale intensity for each image.
+    :param transpose: bool
+        If true, transpose x to (number_of_images, rows, columns, channels),
+        i.e., put channels behind.
+    :param along_col: bool
+        If true, the contrastive images are placed one by one along the column.
+        If False, they are placed one by one along the row.
+    :return: uint8 numpy array
+        The output image.
+    """
+    if not os.path.exists(os.path.dirname(filename)):
+        os.makedirs(os.path.dirname(filename))
+    n = x1.shape[0]
+    if transpose:
+        x1 = x1.transpose(0, 2, 3, 1)
+        x2 = x2.transpose(0, 2, 3, 1)
+    if scale_each is True:
+        for i in range(n):
+            x1[i] = rescale_intensity(x1[i], out_range=(0, 1))
+            x2[i] = rescale_intensity(x2[i], out_range=(0, 1))
+    n_channels = x1.shape[3]
+    x1 = img_as_ubyte(x1)
+    x2 = img_as_ubyte(x2)
+    r, c = shape
+    if r * c < 2*n:
+        print('Shape too small to contain all images')
+    h, w = x1.shape[1:3]
+    ret = np.zeros((h * r, w * c, n_channels), dtype='uint8')
+    for i in range(r):
+        for j in range(c):
+            if i * c + j < 2*n:
+                if along_col:
+                    if j % 2 == 0:
+                        ret[i * h:(i + 1) * h, j * w:(j + 1) * w, :]\
+                            = x1[i * c/2 + j/2]
+                    else:
+                        ret[i * h:(i + 1) * h, j * w:(j + 1) * w, :]\
+                            = x2[i * c/2 + (j-1)/2]
+                else:
+                    if i % 2 == 0:
+                        ret[i * h:(i + 1) * h, j * w:(j + 1) * w, :]\
+                            = x1[j * r/2 + i/2]
+                    else:
+                        ret[i * h:(i + 1) * h, j * w:(j + 1) * w, :]\
+                            = x2[j * r/2 + (i-1)/2]
+
+    ret = ret.squeeze()
+    io.imsave(filename, ret)

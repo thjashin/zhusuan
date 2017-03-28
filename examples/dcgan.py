@@ -46,7 +46,8 @@ def generator(observed, n, n_z, is_training):
 
 
 @zs.reuse('discriminator')
-def discriminator(x, is_training):
+def discriminator(obs, is_training):
+    x = obs['x']
     normalizer_params = {'is_training': is_training,
                          'updates_collections': None}
     ndf = 32
@@ -103,25 +104,15 @@ if __name__ == "__main__":
         tower_x = x[id_ * tf.shape(x)[0] // FLAGS.num_gpus:
                     (id_ + 1) * tf.shape(x)[0] // FLAGS.num_gpus]
         n = tf.shape(tower_x)[0]
-        gen, x_gen = generator(None, n, n_z, is_training)
-        x_class_logits = discriminator(tower_x, is_training)
-        x_gen_class_logits = discriminator(x_gen, is_training)
+        _, x_gen = generator(None, n, n_z, is_training)
+
+        classifier = lambda obs: discriminator(obs, is_training)
+        disc_loss, gen_loss = zs.gan(classifier, {'x': tower_x}, {'x': x_gen})
+
         gen_var_list = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
                                          scope='generator')
         disc_var_list = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
                                           scope='discriminator')
-        disc_loss = (tf.reduce_mean(
-            tf.nn.sigmoid_cross_entropy_with_logits(
-                labels=tf.ones_like(x_class_logits),
-                logits=x_class_logits)) +
-            tf.reduce_mean(
-                tf.nn.sigmoid_cross_entropy_with_logits(
-                    labels=tf.zeros_like(x_gen_class_logits),
-                    logits=x_gen_class_logits))) / 2.
-        gen_loss = tf.reduce_mean(
-            tf.nn.sigmoid_cross_entropy_with_logits(
-                labels=tf.ones_like(x_gen_class_logits),
-                logits=x_gen_class_logits))
 
         disc_grads = optimizer.compute_gradients(disc_loss,
                                                  var_list=disc_var_list)
@@ -130,8 +121,8 @@ if __name__ == "__main__":
         grads = disc_grads + gen_grads
         return grads, gen_loss, disc_loss
 
-    tower_losses = []
     tower_grads = []
+    tower_losses = []
     for i in range(FLAGS.num_gpus):
         with tf.device('/gpu:%d' % i):
             with tf.name_scope('tower_%d' % i):
