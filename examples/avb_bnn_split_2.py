@@ -309,6 +309,7 @@ def run(dataset_name, logger, rng):
     disc_grads = optimizer.compute_gradients(
         disc_loss, var_list=disc_var_list)
 
+    infer_grads = [(tf.clip_by_value(grad, -10., 10.), var) for grad, var in infer_grads]
     grads = model_grads + infer_grads + disc_grads
     infer = optimizer.apply_gradients(grads)
 
