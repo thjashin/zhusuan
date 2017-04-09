@@ -113,17 +113,21 @@ def bayesianNN(observed, x, n_x, layer_sizes, n_particles, keep_rate):
 #                ly_x = layers.dropout(ly_x, keep_rate)
 
         y_mean = tf.squeeze(ly_x, [2, 3])
-        
+
+        y_prec_alpha = 6. * tf.ones([n_particles, 1])
+        y_prec_beta = 6. * tf.ones([n_particles, 1])
+        y_prec = zs.Gamma('y_prec', y_prec_alpha, y_prec_beta)
+        y_logstd = -0.5*tf.log(y_prec)
 #        y_logstd_mean = tf.get_variable('y_logstd_mean', shape=[],
 #                                        initializer=tf.constant_initializer(-1.5))
 #        y_logstd_logstd = tf.get_variable('y_logstd_logstd', shape=[],
 #                                        initializer=tf.constant_initializer(0.5))
 #        y_logstd = zs.Normal('y_logstd', y_logstd_mean, y_logstd_logstd)
-        y_logstd = np.log(0.25)
+#        y_logstd = np.log(0.25)
         #y_logstd = tf.get_variable('y_logstd', shape=[],
         #                           initializer=tf.constant_initializer(0.))
-        y = zs.Normal('y', y_mean, y_logstd * tf.ones_like(y_mean))
-
+        y = zs.Normal('y', y_mean, tf.tile(y_logstd, [1, tf.shape(x)[0]]))
+       
     return model, y_mean
 
 @zs.reuse('variational')
@@ -160,6 +164,7 @@ def fully_connected_variational(layer_sizes, n_particles, is_training):
     w1 = layers.fully_connected(w1, 51)
     w1 = layers.fully_connected(w1, 51, activation_fn=None)
     w1 = tf.reshape(w1, [n_particles, 1, 1, 51])
+
     return w0, w1
 
 
@@ -326,7 +331,7 @@ def run(dataset_name, logger, rng):
     # Define training/evaluation parameters
     lb_samples = 10
     ll_samples = 1000
-    epoches = 300
+    epoches = 1000
     batch_size = 10
     iters = int(np.floor(x_train.shape[0] / float(batch_size)))
     test_batch_size = 1000
@@ -355,6 +360,20 @@ def run(dataset_name, logger, rng):
     w0, w1 = variational(layer_sizes, n_particles, is_training)
     latent = dict(zip(w_names, [w0, w1]))
 
+    with tf.variable_scope('variational'):
+        with zs.BayesianNet() as variational_prec:
+            prec_logalpha = tf.get_variable('prec_logalpha', shape=[1],
+                                 initializer=tf.constant_initializer(np.log(6.)))
+            prec_logbeta = tf.get_variable('prec_logbeta', shape=[1],
+                            initializer=tf.constant_initializer(np.log(6.)))
+            alpha = tf.exp(prec_logalpha)
+            beta = tf.exp(prec_logbeta)
+            q_prec = zs.Gamma('y_prec', alpha, beta, n_samples=n_particles, group_event_ndims=1)
+            q_prec = tf.stop_gradient(q_prec)
+            kldiv_prec = tf.contrib.distributions.kl(
+                tf.contrib.distributions.Gamma(alpha, beta),
+                tf.contrib.distributions.Gamma(6., 6.))
+
     prior_model, _ = bayesianNN(None, x, n_x, layer_sizes,
                                 n_particles, keep_rate)
     prior_outputs = prior_model.outputs(w_names)
@@ -363,8 +382,21 @@ def run(dataset_name, logger, rng):
     classifier1 = lambda obs, lat: logistic_discriminator1(obs, lat)
     classifier2 = lambda obs, lat: logistic_discriminator2(obs, lat)
     model_loss, infer_loss, disc_loss, infer_logits, prior_logits = avb(
-        log_like, classifier1, classifier2, {'y': y_obs}, latent, prior_lats)
+        log_like, classifier1, classifier2, {'y': y_obs, 'y_prec': q_prec},
+        latent, prior_lats)
 
+    # model
+    observed = {}
+    observed.update(latent)
+    observed.update({'y': y_obs, 'y_prec': q_prec})
+    model, y_mean = bayesianNN(observed, x, n_x, layer_sizes,
+                               n_particles, keep_rate)
+    #loss for precision
+    loss_prec = 0.5 * N *\
+        (tf.stop_gradient(tf.reduce_mean((y_obs-y_mean)**2))\
+        * alpha / beta - \
+        (tf.digamma(alpha) - tf.log(beta+1e-10))) + kldiv_prec
+    infer_loss = infer_loss + loss_prec
     learning_rate_ph = tf.placeholder(tf.float32, shape=[])
     optimizer = tf.train.AdamOptimizer(learning_rate_ph, epsilon=1e-4)
 
@@ -397,11 +429,6 @@ def run(dataset_name, logger, rng):
     disc_grad_mean = sum([tf.reduce_mean(abs(grad)) for grad, _ in disc_grads]) / len(disc_grads)
 
     # prediction: rmse & log likelihood
-    observed = {}
-    observed.update(latent)
-    observed.update({'y': y_obs})
-    model, y_mean = bayesianNN(observed, x, n_x, layer_sizes,
-                               n_particles, keep_rate)
     y_pred = tf.reduce_mean(y_mean, 0)
     rmse = tf.sqrt(tf.reduce_mean((y_pred - y) ** 2)) * std_y_train
     log_py_xw = model.local_log_prob('y')
@@ -504,10 +531,10 @@ if __name__ == '__main__':
     np.random.seed(1234)
     rng = np.random.RandomState(1)
 
-    dataset_name = 'wine'
+    dataset_name = 'naval'
     logger = logging.getLogger('avb_bnn')
     logger.setLevel(logging.DEBUG)
-    info_file_handler = logging.FileHandler('logs/avb_bnn_split/'+dataset_name+'.log')
+    info_file_handler = logging.FileHandler('logs/avb_bnn_split/'+dataset_name+'_gamma_split.log')
     info_file_handler.setLevel(logging.INFO)
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO)

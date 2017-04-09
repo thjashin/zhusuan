@@ -30,66 +30,6 @@ def merge_dicts(*dict_args):
         result.update(dictionary)
     return result
 
-
-def avb(log_like, classifier1, classifier2, observed, latent, prior):
-    #sample mean distribution of latent and prior
-    l_w0, l_w1 = latent['w0'], latent['w1']
-    p_w0, p_w1 = prior['w0'], prior['w1']
-    z0 = tf.random_uniform(tf.shape(l_w0)[:1])
-    z0 = tf.to_float(tf.greater(z0, 0.5))
-    z1 = tf.random_uniform(tf.shape(l_w1)[:1])
-    z1 = tf.to_float(tf.greater(z1, 0.5))
-    def _mul_1st_dim(z, w):
-        return tf.transpose(z * tf.transpose(w))
-    mean_w0 = _mul_1st_dim(z0, l_w0) + _mul_1st_dim(1-z0, p_w0)
-    mean_w1 = _mul_1st_dim(z1, l_w1) + _mul_1st_dim(1-z1, p_w1)
-   # mean_w0 = z0 * l_w0 + (1-z0) * p_w0
-   # mean_w1 = z1 * l_w1 + (1-z1) * p_w1
-    mean = {'w0':mean_w0, 'w1':mean_w1}
-
-    infer_class_logits1 = classifier1(observed, latent)
-    mean_class_logits1 = classifier1(observed, mean)
-    mean_class_logits2 = classifier2(observed, mean)
-    prior_class_logits2 = classifier2(observed, prior)
-    infer_class_logits2 = classifier2(observed, latent)
-
-    if not type(infer_class_logits1) == type((0,)):
-        infer_class_logits1 = [infer_class_logits1]
-        prior_class_logits2 = [prior_class_logits2]
-        mean_class_logits1 = [mean_class_logits1]
-        mean_class_logits2 = [mean_class_logits2]
-    infer_class_logits1 = list(infer_class_logits1)
-    prior_class_logits2 = list(prior_class_logits2)
-    mean_class_logits1 = list(mean_class_logits1)
-    mean_class_logits2 = list(mean_class_logits2)
-
-    joint_obs = merge_dicts(observed, latent)
-    model_loss = -tf.reduce_mean(log_like(joint_obs))
-    infer_loss = model_loss +\
-        sum([tf.reduce_mean(il) for il in infer_class_logits1]) +\
-        sum([tf.reduce_mean(il) for il in infer_class_logits2])  
-#        sum([tf.reduce_mean(ml) for ml in mean_class_logits2])
-    disc_loss1 = sum([
-        tf.reduce_mean(
-            tf.nn.sigmoid_cross_entropy_with_logits(
-                labels=tf.ones_like(il), logits=il)) + \
-        tf.reduce_mean(
-            tf.nn.sigmoid_cross_entropy_with_logits(
-                labels=tf.zeros_like(ml), logits=ml))
-        for il, ml in zip(infer_class_logits1, mean_class_logits1)])
-    disc_loss2 = sum([
-        tf.reduce_mean(
-            tf.nn.sigmoid_cross_entropy_with_logits(
-                labels=tf.ones_like(ml), logits=ml)) + \
-        tf.reduce_mean(
-            tf.nn.sigmoid_cross_entropy_with_logits(
-                labels=tf.zeros_like(pl), logits=pl))
-        for ml, pl in zip(mean_class_logits2, prior_class_logits2)])
-    disc_loss = disc_loss1 + disc_loss2
-    return model_loss, infer_loss, disc_loss, infer_class_logits1, prior_class_logits2
-
-
-
 @zs.reuse('model')
 def bayesianNN(observed, x, n_x, layer_sizes, n_particles, keep_rate):
     with zs.BayesianNet(observed=observed) as model:
@@ -113,13 +53,17 @@ def bayesianNN(observed, x, n_x, layer_sizes, n_particles, keep_rate):
 #                ly_x = layers.dropout(ly_x, keep_rate)
 
         y_mean = tf.squeeze(ly_x, [2, 3])
-        
+ 
+        y_prec_alpha = 6. * tf.ones([n_particles, 1])
+        y_prec_beta = 6. * tf.ones([n_particles, 1])
+        y_prec = zs.Gamma('y_prec', y_prec_alpha, y_prec_beta)
+        y_logstd = -0.5*tf.log(y_prec)       
 #        y_logstd_mean = tf.get_variable('y_logstd_mean', shape=[],
 #                                        initializer=tf.constant_initializer(-1.5))
 #        y_logstd_logstd = tf.get_variable('y_logstd_logstd', shape=[],
 #                                        initializer=tf.constant_initializer(0.5))
 #        y_logstd = zs.Normal('y_logstd', y_logstd_mean, y_logstd_logstd)
-        y_logstd = np.log(0.25)
+#        y_logstd = np.log(0.25)
         #y_logstd = tf.get_variable('y_logstd', shape=[],
         #                           initializer=tf.constant_initializer(0.))
         y = zs.Normal('y', y_mean, y_logstd * tf.ones_like(y_mean))
@@ -248,20 +192,6 @@ def logistic_discriminator1(observed, latent):
     lc_w1 = tf.squeeze(lc_w1)
     return lc_w0, lc_w1
 
-@zs.reuse('discriminator2')
-def logistic_discriminator2(observed, latent):
-    w0 = tf.transpose(latent['w0'], [0, 2, 3, 1])
-    w1 = tf.transpose(latent['w1'], [0, 2, 3, 1])
-
-    lc_w0 = layers.flatten(w0)
-    lc_w0 = layers.fully_connected(lc_w0, 1, activation_fn=None)
-    lc_w0 = tf.squeeze(lc_w0)
-
-    lc_w1 = layers.flatten(w1)
-    lc_w1 = layers.fully_connected(lc_w1, 1, activation_fn=None)
-    lc_w1 = tf.squeeze(lc_w1)
-    return lc_w0, lc_w1
-
 
 def run(dataset_name, logger, rng):
     tf.reset_default_graph()
@@ -274,11 +204,10 @@ def run(dataset_name, logger, rng):
     disc_func = [fully_connected_discriminator, conv_discriminator, logistic_discriminator1]
     infer_index = 1
     disc_index = 2
-    logger.info("split T to two terms")
     logger.info('the mean was at the dimension of n_particles instead of all dimensions')
 
     logger.info('time = {}'.format(str(datetime.now())))
-    logger.info('model: no dropout, y_logstd=log(0.25)')
+#    logger.info('model: no dropout, y_logstd=log(0.25)')
     logger.info('variational: {}'.format(infer_str[infer_index]))
     logger.info('discriminator: {}'.format(disc_str[disc_index]))
 
@@ -326,7 +255,7 @@ def run(dataset_name, logger, rng):
     # Define training/evaluation parameters
     lb_samples = 10
     ll_samples = 1000
-    epoches = 300
+    epoches = 1000
     batch_size = 10
     iters = int(np.floor(x_train.shape[0] / float(batch_size)))
     test_batch_size = 1000
@@ -355,15 +284,43 @@ def run(dataset_name, logger, rng):
     w0, w1 = variational(layer_sizes, n_particles, is_training)
     latent = dict(zip(w_names, [w0, w1]))
 
+    with tf.variable_scope('variational'):
+        with zs.BayesianNet() as variational_prec:
+            prec_logalpha = tf.get_variable('prec_logalpha', shape=[1],
+                                 initializer=tf.constant_initializer(np.log(6.)))
+            prec_logbeta = tf.get_variable('prec_logbeta', shape=[1],
+                            initializer=tf.constant_initializer(np.log(6.)))
+            alpha = tf.exp(prec_logalpha)
+            beta = tf.exp(prec_logbeta)
+            q_prec = zs.Gamma('y_prec', alpha, beta, n_samples=n_particles, group_event_ndims=1)
+            q_prec = tf.stop_gradient(q_prec)
+            kldiv_prec = tf.contrib.distributions.kl(
+                tf.contrib.distributions.Gamma(alpha, beta),
+                tf.contrib.distributions.Gamma(6., 6.))
+
+
     prior_model, _ = bayesianNN(None, x, n_x, layer_sizes,
                                 n_particles, keep_rate)
     prior_outputs = prior_model.outputs(w_names)
     prior_lats = dict(zip(w_names, prior_outputs))
 
     classifier1 = lambda obs, lat: logistic_discriminator1(obs, lat)
-    classifier2 = lambda obs, lat: logistic_discriminator2(obs, lat)
-    model_loss, infer_loss, disc_loss, infer_logits, prior_logits = avb(
-        log_like, classifier1, classifier2, {'y': y_obs}, latent, prior_lats)
+    model_loss, infer_loss, disc_loss, infer_logits, prior_logits = zs.avb(
+        log_like, classifier1, {'y': y_obs, 'y_prec': q_prec},
+        latent, prior_lats)
+
+    # model
+    observed = {}
+    observed.update(latent)
+    observed.update({'y': y_obs, 'y_prec': q_prec})
+    model, y_mean = bayesianNN(observed, x, n_x, layer_sizes,
+                               n_particles, keep_rate)
+    #loss for precision
+    loss_prec = 0.5 * N *\
+        (tf.stop_gradient(tf.reduce_mean((y_obs-y_mean)**2))\
+        * alpha / beta - \
+        (tf.digamma(alpha) - tf.log(beta+1e-10))) + kldiv_prec
+    infer_loss = infer_loss + loss_prec
 
     learning_rate_ph = tf.placeholder(tf.float32, shape=[])
     optimizer = tf.train.AdamOptimizer(learning_rate_ph, epsilon=1e-4)
@@ -373,9 +330,7 @@ def run(dataset_name, logger, rng):
     infer_var_list = tf.get_collection(
         tf.GraphKeys.TRAINABLE_VARIABLES, scope='variational')
     disc_var_list = tf.get_collection(
-        tf.GraphKeys.TRAINABLE_VARIABLES, scope='discriminator1') +\
-        tf.get_collection(
-        tf.GraphKeys.TRAINABLE_VARIABLES, scope='discriminator2')
+        tf.GraphKeys.TRAINABLE_VARIABLES, scope='discriminator1')
 
 
     model_grads = [] if not len(model_var_list) else \
@@ -397,11 +352,6 @@ def run(dataset_name, logger, rng):
     disc_grad_mean = sum([tf.reduce_mean(abs(grad)) for grad, _ in disc_grads]) / len(disc_grads)
 
     # prediction: rmse & log likelihood
-    observed = {}
-    observed.update(latent)
-    observed.update({'y': y_obs})
-    model, y_mean = bayesianNN(observed, x, n_x, layer_sizes,
-                               n_particles, keep_rate)
     y_pred = tf.reduce_mean(y_mean, 0)
     rmse = tf.sqrt(tf.reduce_mean((y_pred - y) ** 2)) * std_y_train
     log_py_xw = model.local_log_prob('y')
@@ -504,10 +454,10 @@ if __name__ == '__main__':
     np.random.seed(1234)
     rng = np.random.RandomState(1)
 
-    dataset_name = 'wine'
+    dataset_name = 'naval'
     logger = logging.getLogger('avb_bnn')
     logger.setLevel(logging.DEBUG)
-    info_file_handler = logging.FileHandler('logs/avb_bnn_split/'+dataset_name+'.log')
+    info_file_handler = logging.FileHandler('logs/avb_bnn_split/'+dataset_name+'_gamma_nosplit_1.log')
     info_file_handler.setLevel(logging.INFO)
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO)

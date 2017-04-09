@@ -436,6 +436,9 @@ if __name__ == '__main__':
     console_handler.setLevel(logging.INFO)
     logger.addHandler(info_file_handler)
     logger.addHandler(console_handler)
+    logger.info(__file__)
+    with open(__file__) as f:
+        logger.info(f.read())
 
     iter_run = 20
     rmse_results = []
