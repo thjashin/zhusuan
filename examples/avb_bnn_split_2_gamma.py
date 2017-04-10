@@ -341,7 +341,7 @@ def run(dataset_name, logger, rng):
     disc_grads = optimizer.compute_gradients(
         disc_loss, var_list=disc_var_list)
 
-    infer_grads = [(tf.clip_by_value(grad, -10., 10.), var) for grad, var in infer_grads]
+    infer_grads = [(tf.clip_by_average_norm(grad, 10.), var) for grad, var in infer_grads]
     grads = model_grads + infer_grads + disc_grads
     infer = optimizer.apply_gradients(grads)
 
@@ -455,10 +455,10 @@ if __name__ == '__main__':
     np.random.seed(1234)
     rng = np.random.RandomState(1)
 
-    dataset_name = 'naval'
+    dataset_name = 'yacht'
     logger = logging.getLogger('avb_bnn')
     logger.setLevel(logging.DEBUG)
-    info_file_handler = logging.FileHandler('logs/avb_bnn_split/'+dataset_name+'_gamma_nosplit_1.log')
+    info_file_handler = logging.FileHandler('logs/avb_bnn_split/'+dataset_name+'_gamma_nosplit_clip.log')
     info_file_handler.setLevel(logging.INFO)
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO)
