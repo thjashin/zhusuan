@@ -261,7 +261,7 @@ def run(dataset_name, logger, rng):
     test_batch_size = 1000
     test_iters = int(np.ceil(x_test.shape[0] / float(test_batch_size)))
     test_freq = 10
-    learning_rate = 0.01
+    learning_rate = 0.001
     anneal_lr_freq = 1000
     anneal_lr_rate = 0.75
 
@@ -455,10 +455,10 @@ if __name__ == '__main__':
     np.random.seed(1234)
     rng = np.random.RandomState(1)
 
-    dataset_name = 'yacht'
+    dataset_name = 'naval'
     logger = logging.getLogger('avb_bnn')
     logger.setLevel(logging.DEBUG)
-    info_file_handler = logging.FileHandler('logs/avb_bnn_split/'+dataset_name+'_gamma_nosplit_clip.log')
+    info_file_handler = logging.FileHandler('logs/avb_bnn/'+dataset_name+'_gamma_nosplit.log')
     info_file_handler.setLevel(logging.INFO)
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO)

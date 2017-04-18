@@ -5,12 +5,12 @@ from __future__ import absolute_import
 from __future__ import division
 
 import tensorflow as tf
+from zhusuan.utils import convert_to_int
+import numpy as np
 
 
 __all__ = [
-    'linear_ar',
     'planar_normalizing_flow',
-    'inv_autoregressive_flow'
 ]
 
 
@@ -88,8 +88,53 @@ def planar_normalizing_flow(samples, log_probs, n_iters):
     :return: A (N-1)-D Tensor, the log probabilities of the transformed
         samples.
     """
-    # TODO: check input shape (N>=2) of samples and log_probs.
-    # TODO: assert n_iters int (not Tensor int).
+    samples = tf.convert_to_tensor(samples, dtype=tf.float32)
+    log_probs = tf.convert_to_tensor(log_probs, dtype=tf.float32)
+
+    if not isinstance(n_iters, int):
+        raise ValueError('n_iters should be type \'int\'')
+
+    # check shapes of samples and log_probs
+    static_sample_shape = samples.get_shape()
+    static_logprob_shape = log_probs.get_shape()
+    static_sample_ndim = convert_to_int(static_sample_shape.ndims)
+    static_logprob_ndim = convert_to_int(static_logprob_shape.ndims)
+    if static_sample_ndim and static_sample_ndim <= 1:
+        raise ValueError('samples should have rank >= 2')
+    if static_sample_ndim and static_logprob_ndim \
+            and static_sample_ndim != static_logprob_ndim + 1:
+        raise ValueError('log_probs should have rank (N-1), while N is the '
+                         'rank of samples')
+    try:
+        tf.broadcast_static_shape(static_sample_shape,
+                                  static_logprob_shape)
+    except ValueError:
+        raise ValueError(
+             "samples and log_probs don't have same shape of (N-1) dims,"
+             "while N is the rank of samples")
+    dynamic_sample_shape = tf.shape(samples)
+    dynamic_logprob_shape = tf.shape(log_probs)
+    dynamic_sample_ndim = tf.rank(samples)
+    dynamic_logprob_ndim = tf.rank(log_probs)
+    _assert_sample_ndim = \
+        tf.assert_greater_equal(dynamic_sample_ndim, 2,
+                                message='samples should have rank >= 2')
+    with tf.control_dependencies([_assert_sample_ndim]):
+        samples = tf.identity(samples)
+    _assert_logprob_ndim = \
+        tf.assert_equal(dynamic_logprob_ndim, dynamic_sample_ndim - 1,
+                        message='log_probs should have rank (N-1), while N is'
+                                ' the rank of samples')
+    with tf.control_dependencies([_assert_logprob_ndim]):
+        log_probs = tf.identity(log_probs)
+    _assert_same_shape = \
+        tf.assert_equal(dynamic_sample_shape[:-1], dynamic_logprob_shape,
+                        message="samples and log_probs don't have same shape "
+                                "of (N-1) dims,while N is the rank of samples")
+    with tf.control_dependencies([_assert_same_shape]):
+        samples = tf.identity(samples)
+        log_probs = tf.identity(log_probs)
+
     input_x = tf.convert_to_tensor(samples, dtype=tf.float32)
     log_probs = tf.convert_to_tensor(log_probs, dtype=tf.float32)
     static_x_shape = input_x.get_shape()
@@ -159,7 +204,7 @@ def inv_autoregressive_flow(samples, hidden, log_probs, autoregressive_nn,
 
     :param samples: A N-D (N>=2) `float32` Tensor of shape `[..., d]`, and
         inverse autoregressive flow will be performed along the last axis.
-    :param hidden: A N-D (N>=2) `float32` Tensor (N>=2) of shape `[..., d]`,
+    :param hidden: A N-D (N>=2) `float32` Tensor of shape `[..., d]`,
         should be of the same shape as `samples`, whose meaning follows which
         described in (Kingma, 2016).
     :param log_probs: A (N-1)-D `float32` Tensor. should be of the same shape
@@ -175,9 +220,55 @@ def inv_autoregressive_flow(samples, hidden, log_probs, autoregressive_nn,
     :return: A (N-1)-D Tensor, the log probabilities of the transformed
         samples.
     """
-    # TODO: check input shape (N>=2) of samples, hidden and log_probs.
-    # TODO: assert n_iters int (not Tensor int).
     # TODO: properly deal with hidden.
+    samples = tf.convert_to_tensor(samples, dtype=tf.float32)
+    log_probs = tf.convert_to_tensor(log_probs, dtype=tf.float32)
+    if hidden is not None:
+        hidden = tf.convert_to_tensor(hidden, dtype=tf.float32)
+    if not isinstance(n_iters, int):
+        raise ValueError('n_iters should be type \'int\'')
+
+    # check shapes of samples and log_probs
+    static_sample_shape = samples.get_shape()
+    static_logprob_shape = log_probs.get_shape()
+    static_sample_ndim = convert_to_int(static_sample_shape.ndims)
+    static_logprob_ndim = convert_to_int(static_logprob_shape.ndims)
+    if static_sample_ndim and static_sample_ndim <= 1:
+        raise ValueError('samples should have rank >= 2')
+    if static_sample_ndim and static_logprob_ndim \
+            and static_sample_ndim != static_logprob_ndim + 1:
+        raise ValueError('log_probs should have rank (N-1), while N is the '
+                         'rank of samples')
+    try:
+        tf.broadcast_static_shape(static_sample_shape,
+                                  static_logprob_shape)
+    except ValueError:
+        raise ValueError(
+             "samples and log_probs don't have same shape of (N-1) dims,"
+             "while N is the rank of samples")
+    dynamic_sample_shape = tf.shape(samples)
+    dynamic_logprob_shape = tf.shape(log_probs)
+    dynamic_sample_ndim = tf.rank(samples)
+    dynamic_logprob_ndim = tf.rank(log_probs)
+    _assert_sample_ndim = \
+        tf.assert_greater_equal(dynamic_sample_ndim, 2,
+                                message='samples should have rank >= 2')
+    with tf.control_dependencies([_assert_sample_ndim]):
+        samples = tf.identity(samples)
+    _assert_logprob_ndim = \
+        tf.assert_equal(dynamic_logprob_ndim, dynamic_sample_ndim - 1,
+                        message='log_probs should have rank (N-1), while N is'
+                                ' the rank of samples')
+    with tf.control_dependencies([_assert_logprob_ndim]):
+        log_probs = tf.identity(log_probs)
+    _assert_same_shape = \
+        tf.assert_equal(dynamic_sample_shape[:-1], dynamic_logprob_shape,
+                        message="samples and log_probs don't have same shape "
+                                "of (N-1) dims,while N is the rank of samples")
+    with tf.control_dependencies([_assert_same_shape]):
+        samples = tf.identity(samples)
+        log_probs = tf.identity(log_probs)
+
     joint_probs = tf.convert_to_tensor(log_probs, dtype=tf.float32)
     z = tf.convert_to_tensor(samples, dtype=tf.float32)
 
