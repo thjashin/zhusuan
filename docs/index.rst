@@ -26,8 +26,27 @@ principled Bayesian inference.
 Getting Started
 ---------------
 
-An easy Normal case here for getting started.
+This version is for internal release. There are two ways to install.
 
+Install built package
+^^^^^^^^^^^^^^^^^^^^^
+::
+
+   pip install http://ml.cs.tsinghua.edu.cn/~jiaxin/ZhuSuan-0.3.0-py2.py3-none-any.whl
+
+Install from source
+^^^^^^^^^^^^^^^^^^^
+Download the source package from::
+
+   http://ml.cs.tsinghua.edu.cn/~jiaxin/ZhuSuan-0.3.0.tar.gz
+
+then follow the README.md in the main directory.
+
+After installation, open your python console and type::
+
+   >>> import zhusuan as zs
+
+If no error occurs, you've successfully installed ZhuSuan.
 
 Tutorials
 ---------
