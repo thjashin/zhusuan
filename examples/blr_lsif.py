@@ -45,15 +45,15 @@ def q_net(observed):
     return variational
 
 
-def kde(samples, points, kernel_stdev):
+def kde(samples, points, kde_stdev):
     # samples: [n D]
     # points: [m D]
     # return [m]
     samples = tf.expand_dims(samples, 1)
     points = tf.expand_dims(points, 0)
     # [n m D]
-    Z = np.sqrt(2 * np.pi) * kernel_stdev
-    log_probs = -np.log(Z) + (-0.5 / kernel_stdev ** 2) * (
+    Z = np.sqrt(2 * np.pi) * kde_stdev
+    log_probs = -np.log(Z) + (-0.5 / kde_stdev ** 2) * (
         samples - points) ** 2
     log_probs = tf.reduce_sum(log_probs, -1)
     log_probs = zs.log_mean_exp(log_probs, 0)
@@ -106,14 +106,17 @@ if __name__ == "__main__":
     epoches_d = 10
     epoches_d0 = 1000
     epoches_g = 500
-    disc_n_samples = 1000
     gen_n_samples = 1000
     lower_box = -5
     upper_box = 5
     kde_batch_size = 2000
     n_qw_samples = 10000
     kde_stdev = 0.05
-    plot_interval = 500
+    plot_interval = 100
+
+    # LSIF parameters
+    kernel_width = 2.
+    lambda_ = 1e-4
 
     # Build the computation graph
     x = tf.placeholder(tf.float32, shape=[N, D], name='x')
@@ -153,49 +156,68 @@ if __name__ == "__main__":
                                      scope="variational")
     infer = optimizer.minimize(-lower_bound, var_list=v_parameters)
 
-    # Adversarial VB
+    # LSIF
     # Generator
     with tf.name_scope('generator'):
         epsilon = tf.random_normal((n_particles, D))
         h = layers.fully_connected(epsilon, 20, scope="generator1")
         h = layers.fully_connected(h, 20, scope="generator2")
         h = layers.fully_connected(h, 20, scope="generator3")
+        # [n_particles, D]
         qw_samples = layers.fully_connected(h, D, activation_fn=None,
                                             scope="generator4")
         # qw_samples = tf.transpose(qw_samples)
 
-    # Discriminator
-    def discriminator(w):
-        with tf.name_scope('discriminator'):
-            # [n_particles, D]
-            h = layers.fully_connected(w, 50, scope="disc1")
-            h = layers.fully_connected(h, 50, scope="disc2")
-            h = layers.fully_connected(h, 50, scope="disc3")
-            # [n_particles]
-            d = tf.squeeze(layers.fully_connected(h, 1, scope="disc4",
-                                                  activation_fn=None))
-        return d
+    def rbf_kernel(w1, w2):
+        return tf.exp(-tf.reduce_sum(tf.square(w1 - w2), -1) /
+                      (2 * kernel_width ** 2))
 
-    d_qw = discriminator(qw_samples)
-    d_pw = discriminator(pw_samples)
-    eq_d = -tf.nn.sigmoid_cross_entropy_with_logits(
-        logits=d_qw, labels=tf.ones_like(d_qw))
-    eq_1_minus_d = -tf.nn.sigmoid_cross_entropy_with_logits(
-        logits=d_qw, labels=tf.zeros_like(d_qw))
-    ep_1_minus_d = -tf.nn.sigmoid_cross_entropy_with_logits(
-        logits=d_pw, labels=tf.zeros_like(d_pw))
+    def phi(w, w_basis):
+        # w: [n_particles, D]
+        # w_basis: [n_basis, D]
+        # phi(w): [n_particles, n_basis]
+        w_row = tf.expand_dims(w, 1)
+        w_col = tf.expand_dims(w_basis, 0)
+        return rbf_kernel(w_row, w_col)
+
+    def H(w, w_basis):
+        # phi_w: [n_basis, n_particles]
+        phi_w = tf.transpose(phi(w, w_basis))
+        # H: [n_basis, n_basis]
+        return tf.matmul(phi_w, phi_w) / tf.to_float(tf.shape(w)[0])
+        # phi_w = phi(w, w_basis)
+        # return tf.reduce_mean(
+        #     tf.expand_dims(phi_w, 2) * tf.expand_dims(phi_w, 1), 0)
+
+    def h(w, w_basis):
+        # h: [n_basis]
+        return tf.reduce_mean(phi(w, w_basis), 0)
+
+    def optimal_ratio(qw_samples, pw_samples):
+        H_ = H(qw_samples, qw_samples)
+        h_ = h(pw_samples, qw_samples)
+        alpha = tf.matmul(
+            tf.matrix_inverse(H_ + lambda_ * tf.eye(tf.shape(H_)[0])),
+            tf.expand_dims(h_, 1))
+        # alpha: [n_basis] = [n_particles]
+        alpha = tf.squeeze(alpha, axis=1)
+        alpha = tf.Print(alpha, [alpha], message="alpha: ", summarize=20)
+        # alpha = tf.maximum(alpha, 0)
+        # phi_w: [n_particles, n_particles]
+        phi_w = phi(qw_samples, qw_samples)
+        ratio = tf.reduce_sum(tf.expand_dims(alpha, 0) * phi_w, 1)
+        # ratio: [n_particles]
+        return tf.Print(ratio, [ratio], summarize=20)
+
+    # kernel stdev
     eq_ll = log_joint({'w': qw_samples, 'y': y_obs})[2]
-    disc_obj = tf.reduce_mean(eq_d + ep_1_minus_d)
-    prior_term = tf.reduce_mean(eq_d - eq_1_minus_d)
+    prior_term = tf.reduce_mean(tf.log(optimal_ratio(qw_samples, pw_samples)))
+    prior_term = tf.stop_gradient(prior_term)
     ll_term = tf.reduce_mean(-eq_ll)
     gen_obj = prior_term + ll_term
 
-    d_parameters = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
-                                     scope="disc")
     g_parameters = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
                                      scope="generator")
-    d_optimizer = tf.train.AdamOptimizer(learning_rate_ph)
-    d_infer = d_optimizer.minimize(-disc_obj, var_list=d_parameters)
     g_optimizer = tf.train.AdamOptimizer(learning_rate_ph)
     g_infer = g_optimizer.minimize(gen_obj, var_list=g_parameters)
 
@@ -203,8 +225,6 @@ if __name__ == "__main__":
     w_ph = tf.placeholder(tf.float32, shape=[None, D], name='w_ph')
     log_joint_value, log_prior, _ = log_joint({'w': w_ph, 'y': y_obs})
     log_mean_field = q_net({'w': w_ph}).local_log_prob('w')
-    estimated_d = tf.nn.sigmoid(discriminator(w_ph))
-    estimated_q = log_prior + discriminator(w_ph)
     # KDE
     samples_ph = tf.placeholder(tf.float32, shape=[None, D], name='samples')
     points_ph = tf.placeholder(tf.float32, shape=[None, D], name='points')
@@ -239,30 +259,10 @@ if __name__ == "__main__":
                     epoch, time_epoch, lb))
 
         # Run the adversarial inference
-        print('Initializing discriminator...')
-        for epoch in range(1, epoches_d0 + 1):
-            lr = learning_rate_d * t0_d / (t0_d + epoch - 1)
-            _, do = sess.run([d_infer, disc_obj],
-                             feed_dict={x: train_x,
-                                        y: train_y,
-                                        learning_rate_ph: lr,
-                                        n_particles: disc_n_samples})
-            if epoch % 100 == 0:
-                print('Discriminator obj = {}'.format(do))
-
         print('Starting adversarial training...')
         gen_objs = []
         for epoch in range(1, epoches_g + 1):
             lr = learning_rate_g * t0_g / (t0_g + epoch - 1)
-            objs = []
-            for epoch_d in range(epoches_d):
-                _, do = sess.run(
-                    [d_infer, disc_obj],
-                    feed_dict={x: train_x,
-                               y: train_y,
-                               learning_rate_ph: lr * 3 / (epoch_d + 3),
-                               n_particles: disc_n_samples})
-                objs.append(do)
 
             _, go, pv, lv = sess.run([g_infer, gen_obj, prior_term, ll_term],
                                      feed_dict={x: train_x,
@@ -270,9 +270,8 @@ if __name__ == "__main__":
                                                 learning_rate_ph: lr,
                                                 n_particles: gen_n_samples})
             gen_objs.append(go)
-            print('Epoch {}, Discriminator obj: {} -> {}, Generator obj = {}, '
-                  'prior = {}, ll = {}'
-                  .format(epoch, objs[0], objs[-1], go, pv, lv))
+            print('Epoch {}, Generator obj = {}, prior = {}, ll = {}'
+                  .format(epoch, go, pv, lv))
 
             if epoch % plot_interval == 0:
                 # Draw the decision boundary
@@ -324,10 +323,6 @@ if __name__ == "__main__":
                 plt.plot(gen_objs, '.')
                 plt.title('Generator objective')
 
-                plt.subplot(3, 3, 6)
-                plt.plot(objs, '.')
-                plt.title('Discriminator objective')
-
                 # Plot the variational posterior
                 log_v_points = sess.run(
                     log_mean_field,
@@ -367,31 +362,31 @@ if __name__ == "__main__":
                 contourf(w0_grid, w1_grid, point_prob)
                 plt.title('Implicit posterior KDE')
 
-                # Plot the posterior estimated by discriminator
-                dq_points = sess.run(
-                    estimated_q, feed_dict={x: train_x,
-                                            y: train_y,
-                                            n_particles: w_points.shape[0],
-                                            w_ph: w_points})
-                dq_grid = np.reshape(dq_points, w0_grid.shape)
-
-                plt.subplot(3, 3, 8)
-                contourf(w0_grid, w1_grid, dq_grid)
-                plt.title('Estimated posterior using discriminator')
-
-                # Plot the discriminator decision boundary
-                d_points = sess.run(
-                    estimated_d,
-                    feed_dict={n_particles: w_points.shape[0],
-                               w_ph: w_points})
-                lp_grid = np.reshape(d_points, w0_grid.shape)
-
-                plt.subplot(3, 3, 9)
-                plt.pcolormesh(w0_grid, w1_grid, lp_grid)
-                plt.colorbar()
-                CS = plt.contour(w0_grid, w1_grid, lp_grid, colors='k')
-                plt.clabel(CS)
-                plt.title('Discriminator')
-
                 plt.show()
                 exit(0)
+
+                # # Plot the posterior estimated by LSIF
+                # dq_points = sess.run(
+                #     estimated_q, feed_dict={x: train_x,
+                #                             y: train_y,
+                #                             n_particles: w_points.shape[0],
+                #                             w_ph: w_points})
+                # dq_grid = np.reshape(dq_points, w0_grid.shape)
+                #
+                # plt.subplot(3, 3, 8)
+                # contourf(w0_grid, w1_grid, dq_grid)
+                # plt.title('Estimated posterior by LSIF')
+                #
+                # # Plot the LSIF decision boundary
+                # d_points = sess.run(
+                #     estimated_d,
+                #     feed_dict={n_particles: w_points.shape[0],
+                #                w_ph: w_points})
+                # lp_grid = np.reshape(d_points, w0_grid.shape)
+                #
+                # plt.subplot(3, 3, 9)
+                # plt.pcolormesh(w0_grid, w1_grid, lp_grid)
+                # plt.colorbar()
+                # CS = plt.contour(w0_grid, w1_grid, lp_grid, colors='k')
+                # plt.clabel(CS)
+                # plt.title('LSIF decision boundary')
