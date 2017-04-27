@@ -187,6 +187,7 @@ if __name__ == "__main__":
     eq_ll = log_joint({'w': qw_samples, 'y': y_obs})[2]
     disc_obj = tf.reduce_mean(eq_d + ep_1_minus_d)
     prior_term = tf.reduce_mean(eq_d - eq_1_minus_d)
+    # prior_term = tf.stop_gradient(prior_term)
     ll_term = tf.reduce_mean(-eq_ll)
     gen_obj = prior_term + ll_term
 

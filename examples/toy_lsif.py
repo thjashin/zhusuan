@@ -55,7 +55,7 @@ if __name__ == "__main__":
     kde_batch_size = 2000
 
     # LSIF parameters
-    kernel_width = 0.5
+    kernel_width = 0.2
     lambda_ = 0.2
 
     # Build the computation graph
@@ -118,6 +118,7 @@ if __name__ == "__main__":
         # phi_x: [N, n_basis]
         phi_x = phi(x, qw_samples)
         ratio = tf.reduce_sum(tf.expand_dims(alpha, 0) * phi_x, 1)
+        # ratio = tf.maximum(0., ratio)
         # ratio: [N]
         return tf.Print(ratio, [ratio], summarize=20)
 
@@ -150,7 +151,7 @@ if __name__ == "__main__":
             return ys
 
         # Plot 1: q, p distribution and samples
-        ax = plt.subplot(3, 1, 1)
+        ax = plt.subplot(2, 1, 1)
         q_curve = kde(xs, qx, 1000, 0.02)
         p_curve = kde(xs, px, 1000, 0.1)
         ax.plot(xs, q_curve)
@@ -161,7 +162,7 @@ if __name__ == "__main__":
         ax.legend()
 
         # Plot 2: True ratio vs. estimated ratio (LSIF)
-        ax = plt.subplot(3, 1, 2)
+        ax = plt.subplot(2, 1, 2)
         # normalized true ratio analytic
         r_mean = (q_mean * q_precision - p_mean * p_precision) / (
             q_precision - p_precision)
