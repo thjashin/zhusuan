@@ -59,16 +59,21 @@ if __name__ == "__main__":
     lambda_ = 0.2
 
     # Build the computation graph
+    x_ph = tf.placeholder(tf.float32, [None])
+
     # Generate synthetic data
     q_model = q({}, n_samples)
     p_model = p({}, n_samples)
     qx_samples, log_qx = q_model.query('x', outputs=True, local_log_prob=True)
     px_samples, log_px = p_model.query('x', outputs=True, local_log_prob=True)
-    p_model_obs = p({'x': qx_samples}, n_samples)
-    log_p_qx = p_model_obs.local_log_prob('x')
-    true_log_ratio = log_qx - log_p_qx
-    true_log_ratio_n = true_log_ratio - zs.log_mean_exp(-log_p_qx)
-    true_ratio_n = tf.exp(true_log_ratio_n)
+
+    # Plotting computation
+    p_model_obs = p({'x': x_ph}, n_samples)
+    q_model_obs = q({'x': x_ph}, n_samples)
+    log_p_given_x = p_model_obs.local_log_prob('x')
+    log_q_given_x = q_model_obs.local_log_prob('x')
+    true_log_ratio = log_q_given_x - log_p_given_x
+    true_ratio = tf.exp(true_log_ratio)
 
     # LSIF
     def rbf_kernel(x1, x2):
@@ -83,10 +88,11 @@ if __name__ == "__main__":
         return rbf_kernel(w_row, w_col)
 
     def H(w, w_basis):
-        # phi_w: [n_basis, n_particles]
-        phi_w = tf.transpose(phi(w, w_basis))
+        # phi_w: [n_particles, n_basis]
+        phi_w = phi(w, w_basis)
+        phi_w_t = tf.transpose(phi_w)
         # H: [n_basis, n_basis]
-        return tf.matmul(phi_w, phi_w) / tf.to_float(tf.shape(w)[0])
+        return tf.matmul(phi_w_t, phi_w) / tf.to_float(tf.shape(w)[0])
         # phi_w = phi(w, w_basis)
         # return tf.reduce_mean(
         #     tf.expand_dims(phi_w, 2) * tf.expand_dims(phi_w, 1), 0)
@@ -95,9 +101,9 @@ if __name__ == "__main__":
         # h: [n_basis]
         return tf.reduce_mean(phi(w, w_basis), 0)
 
-    def optimal_ratio(qw_samples, pw_samples):
-        H_ = H(qw_samples, qw_samples)
-        h_ = h(pw_samples, qw_samples)
+    def optimal_alpha(qw_samples, pw_samples):
+        H_ = H(pw_samples, qw_samples)
+        h_ = h(qw_samples, qw_samples)
         alpha = tf.matmul(
             tf.matrix_inverse(H_ + lambda_ * tf.eye(tf.shape(H_)[0])),
             tf.expand_dims(h_, 1))
@@ -105,22 +111,27 @@ if __name__ == "__main__":
         alpha = tf.squeeze(alpha, axis=1)
         alpha = tf.Print(alpha, [alpha], message="alpha: ", summarize=20)
         # alpha = tf.maximum(alpha, 0)
-        # phi_w: [n_particles, n_particles]
-        phi_w = phi(qw_samples, qw_samples)
-        ratio = tf.reduce_sum(tf.expand_dims(alpha, 0) * phi_w, 1)
-        # ratio: [n_particles]
+        return alpha
+
+    def optimal_ratio(x, qw_samples, pw_samples):
+        alpha = optimal_alpha(qw_samples, pw_samples)
+        # phi_x: [N, n_basis]
+        phi_x = phi(x, qw_samples)
+        ratio = tf.reduce_sum(tf.expand_dims(alpha, 0) * phi_x, 1)
+        # ratio: [N]
         return tf.Print(ratio, [ratio], summarize=20)
 
-    # estimated_ratio: [n_particles]
-    estimated_ratio = optimal_ratio(qx_samples, px_samples)
-    estimated_ratio_n = estimated_ratio / zs.log_mean_exp(-log_p_qx)
+    # estimated_ratio: [N]
+    estimated_ratio = optimal_ratio(x_ph, qx_samples, px_samples)
 
     # Plotting
     with tf.Session() as sess:
         sess.run(tf.global_variables_initializer())
 
-        true_r, est_r, qx, px = sess.run([true_ratio_n, estimated_ratio_n,
-                                          qx_samples, px_samples])
+        xs = np.linspace(-5, 5, 1000)
+        true_r, est_r, qx, px = sess.run([true_ratio, estimated_ratio,
+                                          qx_samples, px_samples],
+                                         feed_dict={x_ph: xs})
         print("qx samples:", qx)
         print("true_r:", true_r)
 
@@ -138,32 +149,31 @@ if __name__ == "__main__":
             ys /= (mu_n / batch_size)
             return ys
 
-        xs = np.linspace(-5, 5, 1000)
+        # Plot 1: q, p distribution and samples
+        ax = plt.subplot(3, 1, 1)
         q_curve = kde(xs, qx, 1000, 0.02)
         p_curve = kde(xs, px, 1000, 0.1)
-        # q, p
-        ax = plt.subplot(2, 1, 1)
         ax.plot(xs, q_curve)
         ax.plot(xs, p_curve)
-        ax.plot(xs, stats.norm.pdf(xs, loc=q_mean, scale=q_std))
-        ax.plot(xs, stats.norm.pdf(xs, loc=p_mean, scale=p_std))
+        ax.plot(xs, stats.norm.pdf(xs, loc=q_mean, scale=q_std), label="q")
+        ax.plot(xs, stats.norm.pdf(xs, loc=p_mean, scale=p_std), label="p")
         ax.set_xlim(lower_box, upper_box)
+        ax.legend()
 
-        # ratio
-        ax = plt.subplot(2, 1, 2)
-        # true r analytic
+        # Plot 2: True ratio vs. estimated ratio (LSIF)
+        ax = plt.subplot(3, 1, 2)
+        # normalized true ratio analytic
         r_mean = (q_mean * q_precision - p_mean * p_precision) / (
             q_precision - p_precision)
         r_precision = q_precision - p_precision
         r_std = np.sqrt(1. / r_precision)
         true_r_analytic = stats.norm.pdf(xs, loc=r_mean, scale=r_std)
-        ax.plot(xs, true_r_analytic)
-        # true r from q samples
-        idx = np.argsort(qx)
-        ax.plot(qx[idx], true_r[idx])
-
-        # estimated r from q samples
-        ax.plot(qx[idx], est_r[idx])
-
+        ax.plot(xs, true_r_analytic, label="Normalized true q/p")
+        # True ratio
+        ax.plot(xs, true_r, label="True q/p")
+        # Estimated ratio (LSIF)
+        ax.plot(xs, est_r, label="Est. q/p (LSIF)")
         ax.set_xlim(lower_box, upper_box)
+        ax.legend()
+
         plt.show()
