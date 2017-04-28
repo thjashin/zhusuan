@@ -15,7 +15,6 @@ import zhusuan as zs
 import matplotlib as mpl
 mpl.use('TkAgg')
 from matplotlib import pyplot as plt
-from matplotlib import cm, colors
 
 
 q_mean = 2.

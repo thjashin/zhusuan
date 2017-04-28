@@ -106,17 +106,17 @@ if __name__ == "__main__":
     epoches_d = 10
     epoches_d0 = 1000
     epoches_g = 500
-    gen_n_samples = 1000
+    gen_n_samples = 100
     lower_box = -5
     upper_box = 5
     kde_batch_size = 2000
     n_qw_samples = 10000
     kde_stdev = 0.05
-    plot_interval = 100
+    plot_interval = 300
 
     # LSIF parameters
-    kernel_width = 2.
-    lambda_ = 1e-4
+    kernel_width = 0.5
+    lambda_ = 0.009
 
     # Build the computation graph
     x = tf.placeholder(tf.float32, shape=[N, D], name='x')
@@ -159,14 +159,13 @@ if __name__ == "__main__":
     # LSIF
     # Generator
     with tf.name_scope('generator'):
-        epsilon = tf.random_normal((n_particles, D))
+        epsilon = tf.random_normal([n_particles, D])
         h = layers.fully_connected(epsilon, 20, scope="generator1")
         h = layers.fully_connected(h, 20, scope="generator2")
         h = layers.fully_connected(h, 20, scope="generator3")
         # [n_particles, D]
         qw_samples = layers.fully_connected(h, D, activation_fn=None,
                                             scope="generator4")
-        # qw_samples = tf.transpose(qw_samples)
 
     def rbf_kernel(w1, w2):
         return tf.exp(-tf.reduce_sum(tf.square(w1 - w2), -1) /
@@ -181,10 +180,12 @@ if __name__ == "__main__":
         return rbf_kernel(w_row, w_col)
 
     def H(w, w_basis):
-        # phi_w: [n_basis, n_particles]
-        phi_w = tf.transpose(phi(w, w_basis))
+        # phi_w: [n_particles, n_basis]
+        phi_w = phi(w, w_basis)
+        # phi_w = tf.Print(phi_w, [phi_w], summarize=100)
+        phi_w_t = tf.transpose(phi_w)
         # H: [n_basis, n_basis]
-        return tf.matmul(phi_w, phi_w) / tf.to_float(tf.shape(w)[0])
+        return tf.matmul(phi_w_t, phi_w) / tf.to_float(tf.shape(w)[0])
         # phi_w = phi(w, w_basis)
         # return tf.reduce_mean(
         #     tf.expand_dims(phi_w, 2) * tf.expand_dims(phi_w, 1), 0)
@@ -193,9 +194,10 @@ if __name__ == "__main__":
         # h: [n_basis]
         return tf.reduce_mean(phi(w, w_basis), 0)
 
-    def optimal_ratio(qw_samples, pw_samples):
-        H_ = H(qw_samples, qw_samples)
-        h_ = h(pw_samples, qw_samples)
+    def optimal_alpha(qw_samples, pw_samples):
+        H_ = H(pw_samples, qw_samples)
+        h_ = h(qw_samples, qw_samples)
+        # H_ = tf.Print(H_, [H_], summarize=10000)
         alpha = tf.matmul(
             tf.matrix_inverse(H_ + lambda_ * tf.eye(tf.shape(H_)[0])),
             tf.expand_dims(h_, 1))
@@ -203,16 +205,22 @@ if __name__ == "__main__":
         alpha = tf.squeeze(alpha, axis=1)
         alpha = tf.Print(alpha, [alpha], message="alpha: ", summarize=20)
         # alpha = tf.maximum(alpha, 0)
-        # phi_w: [n_particles, n_particles]
-        phi_w = phi(qw_samples, qw_samples)
-        ratio = tf.reduce_sum(tf.expand_dims(alpha, 0) * phi_w, 1)
-        # ratio: [n_particles]
-        return tf.Print(ratio, [ratio], summarize=20)
+        return alpha
 
-    # kernel stdev
+    def optimal_ratio(x, qw_samples, pw_samples):
+        alpha = optimal_alpha(qw_samples, pw_samples)
+        # phi_x: [N, n_basis]
+        phi_x = phi(x, qw_samples)
+        ratio = tf.reduce_sum(tf.expand_dims(alpha, 0) * phi_x, 1)
+        ratio = tf.maximum(ratio, 1e-8)
+        # ratio: [N]
+        return tf.Print(ratio, [ratio], message="ratio: ", summarize=20)
+
     eq_ll = log_joint({'w': qw_samples, 'y': y_obs})[2]
-    prior_term = tf.reduce_mean(tf.log(optimal_ratio(qw_samples, pw_samples)))
-    prior_term = tf.stop_gradient(prior_term)
+    prior_term = -tf.reduce_mean(
+        tf.log(optimal_ratio(qw_samples, pw_samples,
+                             tf.stop_gradient(qw_samples))))
+    # prior_term = tf.stop_gradient(prior_term)
     ll_term = tf.reduce_mean(-eq_ll)
     gen_obj = prior_term + ll_term
 
@@ -220,6 +228,23 @@ if __name__ == "__main__":
                                      scope="generator")
     g_optimizer = tf.train.AdamOptimizer(learning_rate_ph)
     g_infer = g_optimizer.minimize(gen_obj, var_list=g_parameters)
+
+    def check_grads(loss, var_list):
+        grads_to_be_check = optimizer.compute_gradients(loss,
+                                                        var_list=var_list)
+        if not grads_to_be_check:
+            raise ValueError("No gradients for the given var_list.")
+        grads_to_be_check_ = [g for g, v in grads_to_be_check if g is not None]
+        grads_to_be_check_mean = tf.reduce_mean(
+            tf.stack(
+                [tf.reduce_mean(tf.square(g)) for g in grads_to_be_check_]))
+        grads_to_be_check_var = tf.reduce_mean(
+            tf.stack([tf.nn.moments(g, list(range(0, g.get_shape().ndims)))[1]
+                      for g in grads_to_be_check_]))
+        return grads_to_be_check_mean, grads_to_be_check_var
+
+    ll_grad_mean, ll_grad_var = check_grads(ll_term, g_parameters)
+    prior_grad_mean, prior_grad_var = check_grads(prior_term, g_parameters)
 
     # Plotting
     w_ph = tf.placeholder(tf.float32, shape=[None, D], name='w_ph')
@@ -258,8 +283,8 @@ if __name__ == "__main__":
                 print('Epoch {} ({:.1f}s): Lower bound = {}'.format(
                     epoch, time_epoch, lb))
 
-        # Run the adversarial inference
-        print('Starting adversarial training...')
+        # Run the LSIF-based inference
+        print('Starting LSIF-based training...')
         gen_objs = []
         for epoch in range(1, epoches_g + 1):
             lr = learning_rate_g * t0_g / (t0_g + epoch - 1)
@@ -340,7 +365,7 @@ if __name__ == "__main__":
                 samples = sess.run(qw_samples,
                                    feed_dict={n_particles: n_qw_samples})
                 ax = plt.subplot(3, 3, 7)
-                ax.plot(samples[:, 0], samples[:, 1], '.')
+                ax.scatter(samples[:, 0], samples[:, 1], s=0.1)
                 ax.set_xlim(lower_box, upper_box)
                 ax.set_ylim(lower_box, upper_box)
                 plt.title('Implicit posterior samples')
@@ -364,29 +389,3 @@ if __name__ == "__main__":
 
                 plt.show()
                 exit(0)
-
-                # # Plot the posterior estimated by LSIF
-                # dq_points = sess.run(
-                #     estimated_q, feed_dict={x: train_x,
-                #                             y: train_y,
-                #                             n_particles: w_points.shape[0],
-                #                             w_ph: w_points})
-                # dq_grid = np.reshape(dq_points, w0_grid.shape)
-                #
-                # plt.subplot(3, 3, 8)
-                # contourf(w0_grid, w1_grid, dq_grid)
-                # plt.title('Estimated posterior by LSIF')
-                #
-                # # Plot the LSIF decision boundary
-                # d_points = sess.run(
-                #     estimated_d,
-                #     feed_dict={n_particles: w_points.shape[0],
-                #                w_ph: w_points})
-                # lp_grid = np.reshape(d_points, w0_grid.shape)
-                #
-                # plt.subplot(3, 3, 9)
-                # plt.pcolormesh(w0_grid, w1_grid, lp_grid)
-                # plt.colorbar()
-                # CS = plt.contour(w0_grid, w1_grid, lp_grid, colors='k')
-                # plt.clabel(CS)
-                # plt.title('LSIF decision boundary')

@@ -113,7 +113,7 @@ if __name__ == "__main__":
     kde_batch_size = 2000
     n_qw_samples = 10000
     kde_stdev = 0.05
-    plot_interval = 500
+    plot_interval = 100
 
     # Build the computation graph
     x = tf.placeholder(tf.float32, shape=[N, D], name='x')
@@ -346,7 +346,7 @@ if __name__ == "__main__":
                 samples = sess.run(qw_samples,
                                    feed_dict={n_particles: n_qw_samples})
                 ax = plt.subplot(3, 3, 7)
-                ax.plot(samples[:, 0], samples[:, 1], '.')
+                ax.scatter(samples[:, 0], samples[:, 1], s=0.1)
                 ax.set_xlim(lower_box, upper_box)
                 ax.set_ylim(lower_box, upper_box)
                 plt.title('Implicit posterior samples')
