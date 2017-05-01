@@ -4,34 +4,26 @@
 from __future__ import absolute_import
 from __future__ import print_function
 from __future__ import division
-import sys
 import os
 import time
+import logging
+from datetime import datetime
 
 import tensorflow as tf
 from tensorflow.contrib import layers
 from six.moves import range, zip
 import numpy as np
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import zhusuan as zs
 
-import dropout_dataset as dataset
+from examples.utils import makedirs
+import avb_dataset as dataset
 
-import pdb
-import logging
-from datetime import datetime
-def merge_dicts(*dict_args):
-    """
-    Given any number of dicts, shallow copy and merge into a new dict,
-    precedence goes to key value pairs in latter dicts.
-    """
-    result = {}
-    for dictionary in dict_args:
-        result.update(dictionary)
-    return result
+FLAGS = tf.flags.FLAGS
+tf.flags.DEFINE_string("dataset", "boston", """Which dataset to use""")
+
 
 @zs.reuse('model')
-def bayesianNN(observed, x, n_x, layer_sizes, n_particles, keep_rate):
+def bayesianNN(observed, x, n_x, layer_sizes, n_particles):
     with zs.BayesianNet(observed=observed) as model:
         ws = []
         for i, (n_in, n_out) in enumerate(zip(layer_sizes[:-1],
@@ -39,6 +31,7 @@ def bayesianNN(observed, x, n_x, layer_sizes, n_particles, keep_rate):
             w_mu = tf.zeros([n_particles, 1, n_out, n_in + 1])
             w_logstd = tf.zeros([n_particles, 1, n_out, n_in + 1])
             ws.append(zs.Normal('w' + str(i), w_mu, w_logstd))
+
         # forward
         ly_x = tf.expand_dims(
             tf.tile(tf.expand_dims(x, 0), [n_particles, 1, 1]), 3)
@@ -50,24 +43,16 @@ def bayesianNN(observed, x, n_x, layer_sizes, n_particles, keep_rate):
                                                         tf.float32))
             if i < len(ws) - 1:
                 ly_x = tf.nn.relu(ly_x)
-#                ly_x = layers.dropout(ly_x, keep_rate)
 
         y_mean = tf.squeeze(ly_x, [2, 3])
-        
-#        y_logstd_mean = tf.get_variable('y_logstd_mean', shape=[],
-#                                        initializer=tf.constant_initializer(-1.5))
-#        y_logstd_logstd = tf.get_variable('y_logstd_logstd', shape=[],
-#                                        initializer=tf.constant_initializer(0.5))
-#        y_logstd = zs.Normal('y_logstd', y_logstd_mean, y_logstd_logstd)
         y_logstd = np.log(0.25)
-        #y_logstd = tf.get_variable('y_logstd', shape=[],
-        #                           initializer=tf.constant_initializer(0.))
         y = zs.Normal('y', y_mean, y_logstd * tf.ones_like(y_mean))
 
     return model, y_mean
 
+
 @zs.reuse('variational')
-def mean_field_variational(layer_sizes, n_particles, is_training):
+def mean_field_variational(layer_sizes, n_particles):
     with zs.BayesianNet() as variational:
         ws = []
         for i, (n_in, n_out) in enumerate(zip(layer_sizes[:-1],
@@ -83,17 +68,15 @@ def mean_field_variational(layer_sizes, n_particles, is_training):
                           n_samples=n_particles, group_event_ndims=2))
     return ws[0], ws[1]
 
-@zs.reuse('variational')
-def fully_connected_variational(layer_sizes, n_particles, is_training):
-    normalizer_params = {'is_training': is_training,
-                         'updates_collections': None}
 
+@zs.reuse('variational')
+def fully_connected_variational(layer_sizes, n_particles):
     w0 = tf.random_normal([n_particles, 100])
     w0 = layers.fully_connected(w0, 1024)
     N = layer_sizes[1] * (layer_sizes[0] + 1)
     w0 = layers.fully_connected(w0, N)
     w0 = layers.fully_connected(w0, N, activation_fn=None)
-    w0 = tf.reshape(w0, [n_particles, 1, layer_sizes[1], layer_sizes[0]+1])
+    w0 = tf.reshape(w0, [n_particles, 1, layer_sizes[1], layer_sizes[0] + 1])
 
     w1 = tf.random_normal([n_particles, 50])
     w1 = layers.fully_connected(w1, 100)
@@ -104,17 +87,14 @@ def fully_connected_variational(layer_sizes, n_particles, is_training):
 
 
 @zs.reuse('variational')
-def deconv_variational(layer_sizes, n_particles, is_training):
-    normalizer_params = {'is_training': is_training,
-                         'updates_collections': None}
-
+def deconv_variational(layer_sizes, n_particles):
     w0 = tf.random_normal([n_particles, 100])
     w0 = layers.fully_connected(w0, 24)
     w0 = tf.reshape(w0, [n_particles, 8, 3, 1])
     w0 = layers.conv2d_transpose(w0, 4, 4, stride=[2, 3])
     w0 = layers.conv2d_transpose(w0, 4, 4, stride=[3, 1])
     w0 = layers.conv2d_transpose(w0, 1, [3, 1], stride=1,
-                                  padding='VALID', activation_fn=None)
+                                 padding='VALID', activation_fn=None)
     w0 = tf.transpose(w0, [0, 3, 1, 2])
     _assert_w0_shape = tf.assert_equal(tf.shape(w0),
                                        [n_particles, 1, 50, 9], 
@@ -132,7 +112,7 @@ def deconv_variational(layer_sizes, n_particles, is_training):
                                        [n_particles, 1, 1, 51],
                                        message='w1 shape wrong')
     with tf.control_dependencies([_assert_w0_shape, _assert_w1_shape]):
-        return  w0, w1
+        return w0, w1
 
 
 @zs.reuse('discriminator')
@@ -174,6 +154,7 @@ def conv_discriminator(observed, latent):
     lc_w1 = tf.squeeze(lc_w1)
     return lc_w0, lc_w1
 
+
 @zs.reuse('discriminator1')
 def logistic_discriminator1(observed, latent):
     w0 = tf.transpose(latent['w0'], [0, 2, 3, 1])
@@ -193,16 +174,22 @@ def run(dataset_name, logger, rng):
     tf.reset_default_graph()
     tf.set_random_seed(1234)
 
-
     infer_str = ['mean field', 'fully connected', 'deconv']
-    infer_func = [mean_field_variational, fully_connected_variational, deconv_variational]
+    infer_func = [
+        mean_field_variational,
+        fully_connected_variational,
+        deconv_variational
+    ]
     disc_str = ['fully connected', 'conv', 'simple logistic regression']
-    disc_func = [fully_connected_discriminator, conv_discriminator, logistic_discriminator1]
+    disc_func = [
+        fully_connected_discriminator,
+        conv_discriminator,
+        logistic_discriminator1
+    ]
     infer_index = 1
     disc_index = 2
-    logger.info("split T to two terms")
-    logger.info('the mean was at the dimension of n_particles instead of all dimensions')
-
+    logger.info('the mean was at the dimension of n_particles instead of '
+                'all dimensions')
     logger.info('time = {}'.format(str(datetime.now())))
     logger.info('model: no dropout, y_logstd=log(0.25)')
     logger.info('variational: {}'.format(infer_str[infer_index]))
@@ -237,20 +224,16 @@ def run(dataset_name, logger, rng):
     N, n_x = x_train.shape
 
     # Standardize data
-    x_train, x_test, _, _ = dataset.standardize(x_train,
-                                                x_test)
+    x_train, x_test, _, _ = dataset.standardize(x_train, x_test)
+    print(x_train.shape, x_test.shape)
     y_train, y_test, mean_y_train, std_y_train = \
-        dataset.standardize(
-            y_train.reshape((-1, 1)),
-            y_test.reshape((-1, 1)))
-    y_train, y_test = y_train.squeeze(), y_test.squeeze()
-    std_y_train = std_y_train.squeeze()
+        dataset.standardize(y_train, y_test)
 
     # Define model parameters
     n_hiddens = [50]
 
     # Define training/evaluation parameters
-    lb_samples = 10
+    lb_samples = 50
     ll_samples = 1000
     epoches = 300
     batch_size = 10
@@ -264,8 +247,6 @@ def run(dataset_name, logger, rng):
 
     # Build the computation graph
     n_particles = tf.placeholder(tf.int32, shape=[], name='n_particles')
-    keep_rate = tf.placeholder(tf.float32, shape=[], name='keep_rate')
-    is_training = tf.placeholder(tf.bool, shape=[], name='is_training')
     x = tf.placeholder(tf.float32, shape=[None, n_x])
     y = tf.placeholder(tf.float32, shape=[None])
     y_obs = tf.tile(tf.expand_dims(y, 0), [n_particles, 1])
@@ -273,16 +254,14 @@ def run(dataset_name, logger, rng):
     w_names = ['w' + str(i) for i in range(len(layer_sizes) - 1)]
 
     def log_like(observed):
-        model, _ = bayesianNN(observed, x, n_x, layer_sizes,
-                              n_particles, keep_rate)
+        model, _ = bayesianNN(observed, x, n_x, layer_sizes, n_particles)
         log_py_xw = model.local_log_prob('y')
         return tf.reduce_mean(log_py_xw, 1, keep_dims=True) * N
 
-    w0, w1 = variational(layer_sizes, n_particles, is_training)
+    w0, w1 = variational(layer_sizes, n_particles)
     latent = dict(zip(w_names, [w0, w1]))
 
-    prior_model, _ = bayesianNN(None, x, n_x, layer_sizes,
-                                n_particles, keep_rate)
+    prior_model, _ = bayesianNN(None, x, n_x, layer_sizes, n_particles)
     prior_outputs = prior_model.outputs(w_names)
     prior_lats = dict(zip(w_names, prior_outputs))
 
@@ -300,7 +279,6 @@ def run(dataset_name, logger, rng):
     disc_var_list = tf.get_collection(
         tf.GraphKeys.TRAINABLE_VARIABLES, scope='discriminator1')
 
-
     model_grads = [] if not len(model_var_list) else \
         optimizer.compute_gradients(
         model_loss, var_list=model_var_list)
@@ -309,23 +287,26 @@ def run(dataset_name, logger, rng):
     disc_grads = optimizer.compute_gradients(
         disc_loss, var_list=disc_var_list)
 
-    infer_grads = [(tf.clip_by_average_norm(grad, 10.), var) for grad, var in infer_grads]
+    infer_grads = [(tf.clip_by_average_norm(grad, 10.), var)
+                   for grad, var in infer_grads]
     grads = model_grads + infer_grads + disc_grads
     infer = optimizer.apply_gradients(grads)
 
     infer_prob = tf.nn.sigmoid(infer_logits)
     prior_prob = tf.nn.sigmoid(prior_logits)
-    infer_grad_mean = sum([tf.reduce_mean(abs(grad)) for grad, _ in infer_grads]) / len(infer_grads)
+    infer_grad_mean = sum([tf.reduce_mean(abs(grad))
+                           for grad, _ in infer_grads]) / len(infer_grads)
     model_grad_mean = tf.constant(0.) if not len(model_grads) else \
-        sum([tf.reduce_mean(abs(grad)) for grad, _ in model_grads]) / len(model_grads)
-    disc_grad_mean = sum([tf.reduce_mean(abs(grad)) for grad, _ in disc_grads]) / len(disc_grads)
+        sum([tf.reduce_mean(abs(grad))
+             for grad, _ in model_grads]) / len(model_grads)
+    disc_grad_mean = sum([tf.reduce_mean(abs(grad))
+                          for grad, _ in disc_grads]) / len(disc_grads)
 
     # prediction: rmse & log likelihood
     observed = {}
     observed.update(latent)
     observed.update({'y': y_obs})
-    model, y_mean = bayesianNN(observed, x, n_x, layer_sizes,
-                               n_particles, keep_rate)
+    model, y_mean = bayesianNN(observed, x, n_x, layer_sizes, n_particles)
     y_pred = tf.reduce_mean(y_mean, 0)
     rmse = tf.sqrt(tf.reduce_mean((y_pred - y) ** 2)) * std_y_train
     log_py_xw = model.local_log_prob('y')
@@ -334,7 +315,8 @@ def run(dataset_name, logger, rng):
 
     params = tf.trainable_variables()
     for i in params:
-        logger.info('variable name = {}, shape = {}'.format(i.name, i.get_shape()))
+        logger.info('variable name = {}, shape = {}'
+                    .format(i.name, i.get_shape()))
 
     # Run the inference
     test_rmse_result = []
@@ -358,12 +340,13 @@ def run(dataset_name, logger, rng):
             for t in range(iters):
                 x_batch = x_train[t * batch_size:(t + 1) * batch_size]
                 y_batch = y_train[t * batch_size:(t + 1) * batch_size]
-                _, ml, il, dl, ip, pp, im, mm, dm= sess.run(
-                    [infer, model_loss, infer_loss, disc_loss, infer_prob, prior_prob, infer_grad_mean, model_grad_mean, disc_grad_mean],
+                _, ml, il, dl, ip, pp, im, mm, dm = sess.run(
+                    [infer, model_loss, infer_loss, disc_loss, infer_prob,
+                     prior_prob, infer_grad_mean, model_grad_mean,
+                     disc_grad_mean],
                     feed_dict={n_particles: lb_samples,
                                learning_rate_ph: learning_rate,
-                               x: x_batch, y: y_batch,
-                               is_training: True, keep_rate: 0.75})
+                               x: x_batch, y: y_batch})
                 mls.append(ml)
                 ils.append(il)
                 dls.append(dl)
@@ -374,12 +357,12 @@ def run(dataset_name, logger, rng):
                 pps.append(pp)
             time_epoch += time.time()
             logger.info('Epoch {} ({:.1f}s):'.format(epoch, time_epoch))
-            logger.info('model loss = {}, infer loss = {}, disc loss = {}'.format(
-                np.mean(mls), np.mean(ils), np.mean(dls)))
-            logger.info('infer prob = {}, for prior prob = {}'.format(
-                np.mean(ips), np.mean(pps)))
-            logger.info('model_grad = {}, infer grad = {}, disc_grad = {}'.format(
-                np.mean(mms), np.mean(ims), np.mean(dms)))
+            logger.info('model loss = {}, infer loss = {}, disc loss = {}'
+                        .format(np.mean(mls), np.mean(ils), np.mean(dls)))
+            logger.info('infer prob = {}, for prior prob = {}'
+                        .format(np.mean(ips), np.mean(pps)))
+            logger.info('model_grad = {}, infer grad = {}, disc_grad = {}'
+                        .format(np.mean(mms), np.mean(ims), np.mean(dms)))
 
             if epoch % test_freq == 0:
                 time_test = -time.time()
@@ -388,15 +371,14 @@ def run(dataset_name, logger, rng):
                 iter_sizes = []
                 for t in range(test_iters):
                     test_x_batch = x_test[t * test_batch_size:
-                                            (t + 1) * test_batch_size]
+                                          (t + 1) * test_batch_size]
                     test_y_batch = y_test[t * test_batch_size:
-                                            (t + 1) * test_batch_size]
+                                          (t + 1) * test_batch_size]
                     test_ml, test_il, test_dl, test_rmse, test_ll = sess.run(
                         [model_loss, infer_loss, disc_loss,
                          rmse, log_likelihood],
                         feed_dict={n_particles: ll_samples,
-                                   x: test_x_batch, y: test_y_batch,
-                                   is_training: False, keep_rate: 1.})
+                                   x: test_x_batch, y: test_y_batch})
                     test_mls.append(test_ml)
                     test_ils.append(test_il)
                     test_dls.append(test_dl)
@@ -405,9 +387,10 @@ def run(dataset_name, logger, rng):
                     test_lls.append(test_ll)
                 time_test += time.time()
                 logger.info('>>> TEST ({:.1f}s)'.format(time_test))
-                logger.info('>> TEST model loss = {}, '
-                    'infer loss = {}, disc loss = {}'.format(
-                    np.mean(test_mls), np.mean(test_ils), np.mean(test_dls)))
+                logger.info(
+                    '>> TEST model loss = {}, infer loss = {}, disc loss = {}'
+                    .format(np.mean(test_mls), np.mean(test_ils),
+                            np.mean(test_dls)))
                 test_rmse_ = np.sqrt(
                     np.sum(np.array(test_rmses) ** 2 * np.array(iter_sizes)) /
                     np.sum(iter_sizes))
@@ -419,7 +402,6 @@ def run(dataset_name, logger, rng):
                 logger.info('>> ALL Test rmse = {}'.format(test_rmse_result))
                 logger.info('>> ALL Test ll = {}'.format(test_ll_result))
 
-
         # Final results
         return test_rmse_result, test_ll_result
 
@@ -428,10 +410,11 @@ if __name__ == '__main__':
     np.random.seed(1234)
     rng = np.random.RandomState(1)
 
-    dataset_name = 'naval'
     logger = logging.getLogger('avb_bnn')
     logger.setLevel(logging.DEBUG)
-    info_file_handler = logging.FileHandler('logs/avb_bnn_split/'+dataset_name+'_nosplit.log')
+    log_path = 'logs/avb_bnn/' + FLAGS.dataset + '/log'
+    makedirs(log_path)
+    info_file_handler = logging.FileHandler(log_path)
     info_file_handler.setLevel(logging.INFO)
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO)
@@ -441,26 +424,32 @@ if __name__ == '__main__':
     with open(__file__) as f:
         logger.info(f.read())
 
-    iter_run = 20
+    n_runs = 20
+    if FLAGS.dataset == "protein":
+        n_runs = 5
+    elif FLAGS.dataset == "year":
+        n_runs = 1
+    print("Dataset = {}, N_RUNS = {}".format(FLAGS.dataset, n_runs))
     rmse_results = []
     ll_results = []
-    for _ in range(1, iter_run + 1):
-        rmse_result, ll_result = run(dataset_name, logger, rng)
+    for _ in range(1, n_runs + 1):
+        rmse_result, ll_result = run(FLAGS.dataset, logger, rng)
         rmse_results.append(rmse_result)
         ll_results.append(ll_result)
 
-    for i, (rmse_result, ll_result) in enumerate(zip(rmse_results, ll_results)):
+    for i, (rmse_result, ll_result) in enumerate(zip(rmse_results,
+                                                     ll_results)):
         logger.info("\n## RUN {}".format(i))
         logger.info('# Test rmse = {}'.format(rmse_result))
         logger.info('# Test log likelihood = {}'.format(ll_result))
 
     for i in range(len(rmse_results[0])):
-         logger.info("\n## AVERAGE for {}".format(i))
-         test_rmses = [a[i] for a in rmse_results]
-         test_lls = [a[i] for a in ll_results]
+        logger.info("\n## AVERAGE for {}".format(i))
+        test_rmses = [a[i] for a in rmse_results]
+        test_lls = [a[i] for a in ll_results]
 
-         logger.info("Test rmse = {}/{}".format(np.mean(test_rmses), np.std(test_rmses) / iter_run**0.5))
-         logger.info("Test log likelihood = {}/{}".format(np.mean(test_lls),
-                                               np.std(test_lls) / iter_run **0.5))
-         logger.info('NOTE: Test result above output mean and std. errors')
-
+        logger.info("Test rmse = {}/{}".format(
+            np.mean(test_rmses), np.std(test_rmses) / n_runs ** 0.5))
+        logger.info("Test log likelihood = {}/{}".format(
+            np.mean(test_lls), np.std(test_lls) / n_runs ** 0.5))
+        logger.info('NOTE: Test result above output mean and std. errors')
