@@ -112,11 +112,11 @@ if __name__ == "__main__":
     kde_batch_size = 2000
     n_qw_samples = 10000
     kde_stdev = 0.05
-    plot_interval = 300
+    plot_interval = 200
 
     # LSIF parameters
-    kernel_width = 0.5
-    lambda_ = 0.009
+    # kernel_width = 0.5
+    lambda_ = 0.01
 
     # Build the computation graph
     x = tf.placeholder(tf.float32, shape=[N, D], name='x')
@@ -167,21 +167,21 @@ if __name__ == "__main__":
         qw_samples = layers.fully_connected(h, D, activation_fn=None,
                                             scope="generator4")
 
-    def rbf_kernel(w1, w2):
+    def rbf_kernel(w1, w2, kernel_width):
         return tf.exp(-tf.reduce_sum(tf.square(w1 - w2), -1) /
                       (2 * kernel_width ** 2))
 
-    def phi(w, w_basis):
+    def phi(w, w_basis, kernel_width):
         # w: [n_particles, D]
         # w_basis: [n_basis, D]
         # phi(w): [n_particles, n_basis]
         w_row = tf.expand_dims(w, 1)
         w_col = tf.expand_dims(w_basis, 0)
-        return rbf_kernel(w_row, w_col)
+        return rbf_kernel(w_row, w_col, kernel_width)
 
-    def H(w, w_basis):
+    def H(w, w_basis, kernel_width):
         # phi_w: [n_particles, n_basis]
-        phi_w = phi(w, w_basis)
+        phi_w = phi(w, w_basis, kernel_width)
         # phi_w = tf.Print(phi_w, [phi_w], summarize=100)
         phi_w_t = tf.transpose(phi_w)
         # H: [n_basis, n_basis]
@@ -190,13 +190,13 @@ if __name__ == "__main__":
         # return tf.reduce_mean(
         #     tf.expand_dims(phi_w, 2) * tf.expand_dims(phi_w, 1), 0)
 
-    def h(w, w_basis):
+    def h(w, w_basis, kernel_width):
         # h: [n_basis]
-        return tf.reduce_mean(phi(w, w_basis), 0)
+        return tf.reduce_mean(phi(w, w_basis, kernel_width), 0)
 
-    def optimal_alpha(qw_samples, pw_samples):
-        H_ = H(pw_samples, qw_samples)
-        h_ = h(qw_samples, qw_samples)
+    def optimal_alpha(qw_samples, pw_samples, kernel_width):
+        H_ = H(pw_samples, qw_samples, kernel_width)
+        h_ = h(qw_samples, qw_samples, kernel_width)
         # H_ = tf.Print(H_, [H_], summarize=10000)
         alpha = tf.matmul(
             tf.matrix_inverse(H_ + lambda_ * tf.eye(tf.shape(H_)[0])),
@@ -207,19 +207,36 @@ if __name__ == "__main__":
         # alpha = tf.maximum(alpha, 0)
         return alpha
 
+    def heuristic_kernel_width(w_samples, w_basis):
+        n_w_samples = tf.shape(w_samples)[0]
+        n_w_basis = tf.shape(w_basis)[0]
+        w_samples = tf.expand_dims(w_samples, 1)
+        w_basis = tf.expand_dims(w_basis, 0)
+        pairwise_dist = tf.sqrt(
+            tf.reduce_sum(tf.square(w_samples - w_basis), -1))
+        k = n_w_samples * n_w_basis // 2
+        top_k_values = tf.nn.top_k(tf.reshape(pairwise_dist, [-1]), k=k).values
+        kernel_width = top_k_values[-1]
+        kernel_width = tf.Print(kernel_width, [kernel_width],
+                                message="kernel_width: ")
+        return kernel_width
+
     def optimal_ratio(x, qw_samples, pw_samples):
-        alpha = optimal_alpha(qw_samples, pw_samples)
+        w_samples = tf.concat([qw_samples, pw_samples], axis=0)
+        w_basis = qw_samples
+        kernel_width = heuristic_kernel_width(w_samples, w_basis)
+        alpha = optimal_alpha(qw_samples, pw_samples, kernel_width)
         # phi_x: [N, n_basis]
-        phi_x = phi(x, qw_samples)
+        phi_x = phi(x, qw_samples, kernel_width)
         ratio = tf.reduce_sum(tf.expand_dims(alpha, 0) * phi_x, 1)
         ratio = tf.maximum(ratio, 1e-8)
         # ratio: [N]
         return tf.Print(ratio, [ratio], message="ratio: ", summarize=20)
 
     eq_ll = log_joint({'w': qw_samples, 'y': y_obs})[2]
-    prior_term = -tf.reduce_mean(
-        tf.log(optimal_ratio(qw_samples, pw_samples,
-                             tf.stop_gradient(qw_samples))))
+    prior_term = tf.reduce_mean(
+        tf.log(optimal_ratio(qw_samples, tf.stop_gradient(qw_samples),
+                             tf.stop_gradient(pw_samples))))
     # prior_term = tf.stop_gradient(prior_term)
     ll_term = tf.reduce_mean(-eq_ll)
     gen_obj = prior_term + ll_term

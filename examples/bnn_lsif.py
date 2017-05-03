@@ -185,7 +185,7 @@ def run(dataset_name, logger, rng):
     anneal_lr_rate = 0.75
 
     # LSIF parameters
-    kernel_width = 0.05
+    # kernel_width = 0.05
     lambda_ = 0.009
 
     # Build the computation graph
@@ -202,21 +202,21 @@ def run(dataset_name, logger, rng):
     pw0, pw1 = prior_model.outputs(w_names)
 
     # LSIF
-    def rbf_kernel(w1, w2):
+    def rbf_kernel(w1, w2, kernel_width):
         return tf.exp(-tf.reduce_sum(tf.square(w1 - w2), [1, 2, 3]) /
                       (2 * kernel_width ** 2))
 
-    def phi(w, w_basis):
+    def phi(w, w_basis, kernel_width):
         # w: [n_particles, 1, n_out, n_in + 1]
         # w_basis: [n_basis, 1, n_out, n_in + 1]
         # phi(w): [n_particles, n_basis]
         w_row = tf.expand_dims(w, 1)
         w_col = tf.expand_dims(w_basis, 0)
-        return rbf_kernel(w_row, w_col)
+        return rbf_kernel(w_row, w_col, kernel_width)
 
-    def H(w, w_basis):
+    def H(w, w_basis, kernel_width):
         # phi_w: [n_particles, n_basis]
-        phi_w = phi(w, w_basis)
+        phi_w = phi(w, w_basis, kernel_width)
         # phi_w = tf.Print(phi_w, [phi_w], summarize=100)
         phi_w_t = tf.transpose(phi_w)
         # H: [n_basis, n_basis]
@@ -225,31 +225,48 @@ def run(dataset_name, logger, rng):
         # return tf.reduce_mean(
         #     tf.expand_dims(phi_w, 2) * tf.expand_dims(phi_w, 1), 0)
 
-    def h(w, w_basis):
+    def h(w, w_basis, kernel_width):
         # h: [n_basis]
-        return tf.reduce_mean(phi(w, w_basis), 0)
+        return tf.reduce_mean(phi(w, w_basis, kernel_width), 0)
 
-    def optimal_alpha(qw_samples, pw_samples):
-        H_ = H(pw_samples, qw_samples)
-        h_ = h(qw_samples, qw_samples)
+    def optimal_alpha(qw_samples, pw_samples, kernel_width):
+        H_ = H(pw_samples, qw_samples, kernel_width)
+        h_ = h(qw_samples, qw_samples, kernel_width)
         # H_ = tf.Print(H_, [H_], summarize=10000)
         alpha = tf.matmul(
             tf.matrix_inverse(H_ + lambda_ * tf.eye(tf.shape(H_)[0])),
             tf.expand_dims(h_, 1))
         # alpha: [n_basis] = [n_particles]
         alpha = tf.squeeze(alpha, axis=1)
-        # alpha = tf.Print(alpha, [alpha], message="alpha: ", summarize=20)
+        alpha = tf.Print(alpha, [alpha], message="alpha: ", summarize=20)
         # alpha = tf.maximum(alpha, 0)
         return alpha
 
+    def heuristic_kernel_width(w_samples, w_basis):
+        n_w_samples = tf.shape(w_samples)[0]
+        n_w_basis = tf.shape(w_basis)[0]
+        w_samples = tf.expand_dims(w_samples, 1)
+        w_basis = tf.expand_dims(w_basis, 0)
+        pairwise_dist = tf.sqrt(
+            tf.reduce_sum(tf.square(w_samples - w_basis), [1, 2, 3]))
+        k = n_w_samples * n_w_basis // 2
+        top_k_values, _ = tf.nn.top_k(tf.reshape(pairwise_dist, [-1]), k=k)
+        kernel_width = top_k_values[-1]
+        kernel_width = tf.Print(kernel_width, [kernel_width],
+                                message="kernel_width: ")
+        return kernel_width
+
     def optimal_ratio(x, qw_samples, pw_samples):
-        alpha = optimal_alpha(qw_samples, pw_samples)
+        w_samples = tf.concat([qw_samples, pw_samples], axis=0)
+        w_basis = qw_samples
+        kernel_width = heuristic_kernel_width(w_samples, w_basis)
+        alpha = optimal_alpha(qw_samples, pw_samples, kernel_width)
         # phi_x: [N, n_basis]
-        phi_x = phi(x, qw_samples)
+        phi_x = phi(x, qw_samples, kernel_width)
         ratio = tf.reduce_sum(tf.expand_dims(alpha, 0) * phi_x, 1)
         ratio = tf.maximum(ratio, 1e-8)
         # ratio: [N]
-        # ratio = tf.Print(ratio, [ratio], message="ratio: ", summarize=20)
+        ratio = tf.Print(ratio, [ratio], message="ratio: ", summarize=20)
         return ratio
 
     def log_conditional(observed):
@@ -326,20 +343,26 @@ def run(dataset_name, logger, rng):
                 learning_rate *= anneal_lr_rate
             lbs = []
             ims, mms = [], []
+            w0_kls, w1_kls = [], []
             for t in range(iters):
                 x_batch = x_train[t * batch_size:(t + 1) * batch_size]
                 y_batch = y_train[t * batch_size:(t + 1) * batch_size]
-                _, lb, im, mm = sess.run(
-                    [infer, lower_bound, infer_grad_mean, model_grad_mean],
+                _, lb, im, mm, w0_kl, w1_kl = sess.run(
+                    [infer, lower_bound, infer_grad_mean, model_grad_mean,
+                     w0_kl_term, w1_kl_term],
                     feed_dict={n_particles: lb_samples,
                                learning_rate_ph: learning_rate,
                                x: x_batch, y: y_batch})
                 lbs.append(lb)
                 mms.append(mm)
                 ims.append(im)
+                w0_kls.append(w0_kl)
+                w1_kls.append(w1_kl)
             time_epoch += time.time()
             logger.info('Epoch {} ({:.1f}s):'.format(epoch, time_epoch))
             logger.info('lower bound = {}'.format(np.mean(lbs)))
+            logger.info('w0_kl = {}, w1_kl = {}'.format(
+                np.mean(w0_kls), np.mean(w1_kls)))
             logger.info('model_grad = {}, infer grad = {}'
                         .format(np.mean(mms), np.mean(ims)))
 
