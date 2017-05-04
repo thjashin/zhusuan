@@ -104,6 +104,7 @@ if __name__ == "__main__":
     epoches = 100
     epoches_g = 1000
     gen_n_samples = 1000
+    n_basis = 100
     lower_box = -5
     upper_box = 5
     kde_batch_size = 2000
@@ -223,14 +224,14 @@ if __name__ == "__main__":
         # h: [n_basis]
         return tf.reduce_mean(phi(w, w_basis, kernel_width), 0)
 
-    def optimal_alpha(qw_samples, pw_samples, kernel_width):
-        H_ = H(pw_samples, qw_samples, kernel_width)
-        h_ = h(qw_samples, qw_samples, kernel_width)
+    def optimal_alpha(qw_samples, pw_samples, w_basis, kernel_width):
+        H_ = H(pw_samples, w_basis, kernel_width)
+        h_ = h(qw_samples, w_basis, kernel_width)
         # H_ = tf.Print(H_, [H_], summarize=10000)
         alpha = tf.matmul(
             tf.matrix_inverse(H_ + lambda_ * tf.eye(tf.shape(H_)[0])),
             tf.expand_dims(h_, 1))
-        # alpha: [n_basis] = [n_particles]
+        # alpha: [n_basis]
         alpha = tf.squeeze(alpha, axis=1)
         alpha = tf.Print(alpha, [alpha], message="alpha: ", summarize=20)
         # alpha = tf.maximum(alpha, 0)
@@ -252,11 +253,11 @@ if __name__ == "__main__":
 
     def optimal_ratio(x, qw_samples, pw_samples):
         w_samples = tf.concat([qw_samples, pw_samples], axis=0)
-        w_basis = qw_samples
+        w_basis = qw_samples[:n_basis]
         kernel_width = heuristic_kernel_width(w_samples, w_basis)
-        alpha = optimal_alpha(qw_samples, pw_samples, kernel_width)
+        alpha = optimal_alpha(qw_samples, pw_samples, w_basis, kernel_width)
         # phi_x: [N, n_basis]
-        phi_x = phi(x, qw_samples, kernel_width)
+        phi_x = phi(x, w_basis, kernel_width)
         ratio = tf.reduce_sum(tf.expand_dims(alpha, 0) * phi_x, 1)
         ratio = tf.maximum(ratio, 1e-8)
         # ratio: [N]
