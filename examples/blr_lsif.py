@@ -103,13 +103,13 @@ if __name__ == "__main__":
     t0_g = 100
     epoches = 100
     epoches_g = 1000
-    gen_n_samples = 100
+    gen_n_samples = 1000
     lower_box = -5
     upper_box = 5
     kde_batch_size = 2000
     n_qw_samples = 10000
     kde_stdev = 0.05
-    plot_interval = 1000
+    plot_interval = 100
 
     # LSIF parameters
     # kernel_width = 0.5
@@ -170,7 +170,7 @@ if __name__ == "__main__":
 
     # LSIF
     # Generator
-    with tf.name_scope('generator'):
+    with tf.variable_scope('generator'):
         with zs.BayesianNet():
             eps_mean = tf.get_variable(
                 "eps_mean", shape=[D], dtype=tf.float32,
@@ -181,23 +181,20 @@ if __name__ == "__main__":
             epsilon = zs.Normal("eps", eps_mean, eps_logstd,
                                 n_samples=n_particles)
             # epsilon = tf.random_normal([n_particles, D])
-            # h = layers.fully_connected(epsilon, 10, scope="generator1",
-            #                            activation_fn=tf.tanh)
+            # h = layers.fully_connected(epsilon, 10, activation_fn=tf.tanh)
             # z = zs.Normal("z", tf.zeros([10]), tf.zeros([10]),
             #               n_samples=n_particles)
             # h = tf.concat([h, z], axis=-1)
-            # h = layers.fully_connected(h, 10, scope="generator2",
-            #                            activation_fn=tf.tanh)
-            h = layers.fully_connected(epsilon, 20, activation_fn=None,
-                                       scope="generator2")
+            # h = layers.fully_connected(h, 10, activation_fn=tf.tanh)
+            h = layers.fully_connected(epsilon, 20)
+            h = layers.fully_connected(h, 20, activation_fn=None)
             z_logstd = tf.get_variable(
                 "z_logstd", shape=[20], dtype=tf.float32,
                 initializer=tf.constant_initializer(0.))
             z = zs.Normal("z", h, z_logstd)
-            h = layers.fully_connected(z, 20, scope="generator3")
+            h = layers.fully_connected(z, 20)
             # [n_particles, D]
-            qw_samples = layers.fully_connected(h, D, activation_fn=None,
-                                                scope="generator4")
+            qw_samples = layers.fully_connected(h, D, activation_fn=None)
 
     def rbf_kernel(w1, w2, kernel_width):
         return tf.exp(-tf.reduce_sum(tf.square(w1 - w2), -1) /
