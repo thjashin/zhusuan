@@ -153,6 +153,21 @@ if __name__ == "__main__":
                                      scope="variational")
     infer = optimizer.minimize(-lower_bound, var_list=v_parameters)
 
+    # HMC
+    n_chains = 100
+    n_iters = 200
+    burn_in = n_iters // 2
+    adapt_step_size = tf.placeholder(tf.bool, shape=[], name="adapt_step_size")
+    adapt_mass = tf.placeholder(tf.bool, shape=[], name="adapt_mass")
+    hmc = zs.HMC(step_size=1e-3, n_leapfrogs=10,
+                 adapt_step_size=adapt_step_size, adapt_mass=adapt_mass,
+                 target_acceptance_rate=0.9)
+    w_posterior = tf.Variable(tf.zeros([n_chains, D]), trainable=False,
+                              name="w_pos")
+    sample_op = hmc.sample(lambda obs: log_joint(obs)[0],
+                           observed={'y': y_obs},
+                           latent={'w': w_posterior})
+
     # LSIF
     # Generator
     with tf.name_scope('generator'):
@@ -166,9 +181,20 @@ if __name__ == "__main__":
             epsilon = zs.Normal("eps", eps_mean, eps_logstd,
                                 n_samples=n_particles)
             # epsilon = tf.random_normal([n_particles, D])
-            h = layers.fully_connected(epsilon, 20, scope="generator1")
-            # h = layers.fully_connected(h, 20, scope="generator2")
-            # h = layers.fully_connected(h, 20, scope="generator3")
+            # h = layers.fully_connected(epsilon, 10, scope="generator1",
+            #                            activation_fn=tf.tanh)
+            # z = zs.Normal("z", tf.zeros([10]), tf.zeros([10]),
+            #               n_samples=n_particles)
+            # h = tf.concat([h, z], axis=-1)
+            # h = layers.fully_connected(h, 10, scope="generator2",
+            #                            activation_fn=tf.tanh)
+            h = layers.fully_connected(epsilon, 20, activation_fn=None,
+                                       scope="generator2")
+            z_logstd = tf.get_variable(
+                "z_logstd", shape=[20], dtype=tf.float32,
+                initializer=tf.constant_initializer(0.))
+            z = zs.Normal("z", h, z_logstd)
+            h = layers.fully_connected(z, 20, scope="generator3")
             # [n_particles, D]
             qw_samples = layers.fully_connected(h, D, activation_fn=None,
                                                 scope="generator4")
@@ -297,6 +323,7 @@ if __name__ == "__main__":
         train_y = np.squeeze(train_y)
 
         # Run the mean-field variational inference
+        print('Starting Mean Field VI...')
         for epoch in range(1, epoches + 1):
             lr = learning_rate * t0 / (t0 + epoch - 1)
             time_epoch = -time.time()
@@ -309,6 +336,21 @@ if __name__ == "__main__":
             if epoch % 100 == 0:
                 print('Epoch {} ({:.1f}s): Lower bound = {}'.format(
                     epoch, time_epoch, lb))
+
+        # Run hmc to get the ground truth posterior samples
+        print('Starting HMC...')
+        true_w_samples = []
+        for i in range(n_iters):
+            samples, _, _, _, _, _, ar, ss = sess.run(
+                sample_op, feed_dict={x: train_x,
+                                      y: train_y,
+                                      n_particles: n_chains,
+                                      adapt_step_size: i < (burn_in // 2),
+                                      adapt_mass: i < (burn_in // 2)})
+            print('Sample {}: Acceptance rate = {}, step size = {}'.format(
+                i, np.mean(ar), ss))
+            true_w_samples.append(samples[0])
+        true_w_samples = np.vstack(true_w_samples)
 
         # Run the LSIF-based inference
         print('Starting LSIF-based training...')
@@ -370,8 +412,32 @@ if __name__ == "__main__":
                 plt.plot(train_w_sample[0], train_w_sample[1], 'x')
                 plt.title('Unnormalized true posterior')
 
+                # Plot ground true posterior samples by hmc
+                ax = plt.subplot(3, 3, 9)
+                ax.scatter(true_w_samples[:, 0], true_w_samples[:, 1], s=0.1)
+                ax.set_xlim(lower_box, upper_box)
+                ax.set_ylim(lower_box, upper_box)
+                plt.title('HMC posterior samples')
+
+                # Plot kde for the hmc posterior
+                point_prob = np.zeros((w_points.shape[0]))
+                kde_num_batches = true_w_samples.shape[0] // kde_batch_size
+                for b in range(kde_num_batches):
+                    sample_batch = true_w_samples[
+                        b * kde_batch_size:(b + 1) * kde_batch_size]
+                    point_prob += sess.run(
+                        grid_prob_op,
+                        feed_dict={samples_ph: sample_batch,
+                                   points_ph: w_points})
+                point_prob /= kde_num_batches
+                point_prob = np.reshape(point_prob, w0_grid.shape)
+
+                plt.subplot(3, 3, 8)
+                contourf(w0_grid, w1_grid, point_prob)
+                plt.title('HMC posterior KDE')
+
                 # Plot the gen/disc objectives
-                plt.subplot(3, 3, 3)
+                plt.subplot(3, 3, 7)
                 plt.plot(gen_objs, '.')
                 plt.title('Generator objective')
 
@@ -391,7 +457,7 @@ if __name__ == "__main__":
                 # Plot samples from the implicit posterior
                 samples = sess.run(qw_samples,
                                    feed_dict={n_particles: n_qw_samples})
-                ax = plt.subplot(3, 3, 7)
+                ax = plt.subplot(3, 3, 6)
                 ax.scatter(samples[:, 0], samples[:, 1], s=0.1)
                 ax.set_xlim(lower_box, upper_box)
                 ax.set_ylim(lower_box, upper_box)
