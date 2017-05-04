@@ -156,13 +156,21 @@ if __name__ == "__main__":
     # Adversarial VB
     # Generator
     with tf.name_scope('generator'):
-        epsilon = tf.random_normal((n_particles, D))
-        h = layers.fully_connected(epsilon, 20, scope="generator1")
-        h = layers.fully_connected(h, 20, scope="generator2")
-        h = layers.fully_connected(h, 20, scope="generator3")
-        qw_samples = layers.fully_connected(h, D, activation_fn=None,
-                                            scope="generator4")
-        # qw_samples = tf.transpose(qw_samples)
+        with zs.BayesianNet():
+            # eps_mean = tf.get_variable(
+            #     "eps_mean", shape=[D], dtype=tf.float32,
+            #     initializer=tf.constant_initializer(0.))
+            # eps_logstd = tf.get_variable(
+            #     "eps_logstd", shape=[D], dtype=tf.float32,
+            #     initializer=tf.constant_initializer(0.))
+            # epsilon = zs.Normal("eps", eps_mean, eps_logstd,
+            #                     n_samples=n_particles)
+            epsilon = tf.random_normal((n_particles, D))
+            h = layers.fully_connected(epsilon, 20, scope="generator1")
+            h = layers.fully_connected(h, 20, scope="generator2")
+            h = layers.fully_connected(h, 20, scope="generator3")
+            qw_samples = layers.fully_connected(h, D, activation_fn=None,
+                                                scope="generator4")
 
     # Discriminator
     def discriminator(w):
@@ -189,6 +197,7 @@ if __name__ == "__main__":
     prior_term = tf.reduce_mean(eq_d - eq_1_minus_d)
     # prior_term = tf.stop_gradient(prior_term)
     ll_term = tf.reduce_mean(-eq_ll)
+    # gen_obj = prior_term
     gen_obj = prior_term + ll_term
 
     d_parameters = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,

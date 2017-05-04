@@ -98,25 +98,22 @@ if __name__ == "__main__":
     D = 2
     learning_rate = 1
     learning_rate_g = 0.01
-    learning_rate_d = 0.003
     t0 = 100
     t0_d = 100
     t0_g = 100
     epoches = 100
-    epoches_d = 10
-    epoches_d0 = 1000
-    epoches_g = 500
+    epoches_g = 1000
     gen_n_samples = 100
     lower_box = -5
     upper_box = 5
     kde_batch_size = 2000
     n_qw_samples = 10000
     kde_stdev = 0.05
-    plot_interval = 200
+    plot_interval = 1000
 
     # LSIF parameters
     # kernel_width = 0.5
-    lambda_ = 0.01
+    lambda_ = 0.001
 
     # Build the computation graph
     x = tf.placeholder(tf.float32, shape=[N, D], name='x')
@@ -159,13 +156,22 @@ if __name__ == "__main__":
     # LSIF
     # Generator
     with tf.name_scope('generator'):
-        epsilon = tf.random_normal([n_particles, D])
-        h = layers.fully_connected(epsilon, 20, scope="generator1")
-        h = layers.fully_connected(h, 20, scope="generator2")
-        h = layers.fully_connected(h, 20, scope="generator3")
-        # [n_particles, D]
-        qw_samples = layers.fully_connected(h, D, activation_fn=None,
-                                            scope="generator4")
+        with zs.BayesianNet():
+            eps_mean = tf.get_variable(
+                "eps_mean", shape=[D], dtype=tf.float32,
+                initializer=tf.constant_initializer(0.))
+            eps_logstd = tf.get_variable(
+                "eps_logstd", shape=[D], dtype=tf.float32,
+                initializer=tf.constant_initializer(0.))
+            epsilon = zs.Normal("eps", eps_mean, eps_logstd,
+                                n_samples=n_particles)
+            # epsilon = tf.random_normal([n_particles, D])
+            h = layers.fully_connected(epsilon, 20, scope="generator1")
+            # h = layers.fully_connected(h, 20, scope="generator2")
+            # h = layers.fully_connected(h, 20, scope="generator3")
+            # [n_particles, D]
+            qw_samples = layers.fully_connected(h, D, activation_fn=None,
+                                                scope="generator4")
 
     def rbf_kernel(w1, w2, kernel_width):
         return tf.exp(-tf.reduce_sum(tf.square(w1 - w2), -1) /
@@ -237,8 +243,12 @@ if __name__ == "__main__":
     prior_term = tf.reduce_mean(
         tf.log(optimal_ratio(qw_samples, tf.stop_gradient(qw_samples),
                              tf.stop_gradient(pw_samples))))
+    # prior_term = -tf.reduce_mean(
+    #     tf.log(optimal_ratio(qw_samples, tf.stop_gradient(pw_samples),
+    #                          tf.stop_gradient(qw_samples))))
     # prior_term = tf.stop_gradient(prior_term)
     ll_term = tf.reduce_mean(-eq_ll)
+    # gen_obj = prior_term
     gen_obj = prior_term + ll_term
 
     g_parameters = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
