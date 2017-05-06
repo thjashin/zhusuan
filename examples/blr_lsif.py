@@ -104,7 +104,6 @@ if __name__ == "__main__":
     epoches = 100
     epoches_g = 1000
     gen_n_samples = 1000
-    n_basis = 100
     lower_box = -5
     upper_box = 5
     kde_batch_size = 2000
@@ -115,6 +114,7 @@ if __name__ == "__main__":
     # LSIF parameters
     # kernel_width = 0.5
     lambda_ = 0.001
+    n_basis = 100
 
     # Build the computation graph
     x = tf.placeholder(tf.float32, shape=[N, D], name='x')
@@ -261,7 +261,8 @@ if __name__ == "__main__":
         ratio = tf.reduce_sum(tf.expand_dims(alpha, 0) * phi_x, 1)
         ratio = tf.maximum(ratio, 1e-8)
         # ratio: [N]
-        return tf.Print(ratio, [ratio], message="ratio: ", summarize=20)
+        ratio = tf.Print(ratio, [ratio], message="ratio: ", summarize=20)
+        return ratio
 
     eq_ll = log_joint({'w': qw_samples, 'y': y_obs})[2]
     prior_term = tf.reduce_mean(

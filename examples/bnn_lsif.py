@@ -172,7 +172,7 @@ def run(dataset_name, logger, rng):
         n_hiddens = [50]
 
     # Define training/evaluation parameters
-    lb_samples = 10
+    lb_samples = 100
     ll_samples = 1000
     epoches = 300
     batch_size = 10
@@ -186,7 +186,8 @@ def run(dataset_name, logger, rng):
 
     # LSIF parameters
     # kernel_width = 0.05
-    lambda_ = 0.009
+    lambda_ = 0.001
+    n_basis = 100
 
     # Build the computation graph
     n_particles = tf.placeholder(tf.int32, shape=[], name='n_particles')
@@ -229,14 +230,14 @@ def run(dataset_name, logger, rng):
         # h: [n_basis]
         return tf.reduce_mean(phi(w, w_basis, kernel_width), 0)
 
-    def optimal_alpha(qw_samples, pw_samples, kernel_width):
-        H_ = H(pw_samples, qw_samples, kernel_width)
-        h_ = h(qw_samples, qw_samples, kernel_width)
+    def optimal_alpha(qw_samples, pw_samples, w_basis, kernel_width):
+        H_ = H(pw_samples, w_basis, kernel_width)
+        h_ = h(qw_samples, w_basis, kernel_width)
         # H_ = tf.Print(H_, [H_], summarize=10000)
         alpha = tf.matmul(
             tf.matrix_inverse(H_ + lambda_ * tf.eye(tf.shape(H_)[0])),
             tf.expand_dims(h_, 1))
-        # alpha: [n_basis] = [n_particles]
+        # alpha: [n_basis]
         alpha = tf.squeeze(alpha, axis=1)
         alpha = tf.Print(alpha, [alpha], message="alpha: ", summarize=20)
         # alpha = tf.maximum(alpha, 0)
@@ -250,7 +251,8 @@ def run(dataset_name, logger, rng):
         pairwise_dist = tf.sqrt(
             tf.reduce_sum(tf.square(w_samples - w_basis), [1, 2, 3]))
         k = n_w_samples * n_w_basis // 2
-        top_k_values, _ = tf.nn.top_k(tf.reshape(pairwise_dist, [-1]), k=k)
+        pairwise_dist = tf.Print(pairwise_dist, [tf.shape(pairwise_dist), k])
+        top_k_values = tf.nn.top_k(tf.reshape(pairwise_dist, [-1]), k=k).values
         kernel_width = top_k_values[-1]
         kernel_width = tf.Print(kernel_width, [kernel_width],
                                 message="kernel_width: ")
@@ -258,11 +260,11 @@ def run(dataset_name, logger, rng):
 
     def optimal_ratio(x, qw_samples, pw_samples):
         w_samples = tf.concat([qw_samples, pw_samples], axis=0)
-        w_basis = qw_samples
+        w_basis = qw_samples[:n_basis]
         kernel_width = heuristic_kernel_width(w_samples, w_basis)
-        alpha = optimal_alpha(qw_samples, pw_samples, kernel_width)
+        alpha = optimal_alpha(qw_samples, pw_samples, w_basis, kernel_width)
         # phi_x: [N, n_basis]
-        phi_x = phi(x, qw_samples, kernel_width)
+        phi_x = phi(x, w_basis, kernel_width)
         ratio = tf.reduce_sum(tf.expand_dims(alpha, 0) * phi_x, 1)
         ratio = tf.maximum(ratio, 1e-8)
         # ratio: [N]
