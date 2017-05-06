@@ -165,9 +165,9 @@ if __name__ == "__main__":
                  target_acceptance_rate=0.9)
     w_posterior = tf.Variable(tf.zeros([n_chains, D]), trainable=False,
                               name="w_pos")
-    sample_op = hmc.sample(lambda obs: log_joint(obs)[0],
-                           observed={'y': y_obs},
-                           latent={'w': w_posterior})
+    sample_op, hmc_info = hmc.sample(lambda obs: log_joint(obs)[0],
+                                     observed={'y': y_obs},
+                                     latent={'w': w_posterior})
 
     # LSIF
     # Generator
@@ -339,15 +339,17 @@ if __name__ == "__main__":
         print('Starting HMC...')
         true_w_samples = []
         for i in range(n_iters):
-            samples, _, _, _, _, _, ar, ss = sess.run(
-                sample_op, feed_dict={x: train_x,
-                                      y: train_y,
-                                      n_particles: n_chains,
-                                      adapt_step_size: i < (burn_in // 2),
-                                      adapt_mass: i < (burn_in // 2)})
+            _, samples, acc, ss = sess.run(
+                [sample_op, hmc_info.samples['w'], hmc_info.acceptance_rate,
+                 hmc_info.updated_step_size],
+                feed_dict={x: train_x,
+                           y: train_y,
+                           n_particles: n_chains,
+                           adapt_step_size: i < (burn_in // 2),
+                           adapt_mass: i < (burn_in // 2)})
             print('Sample {}: Acceptance rate = {}, step size = {}'.format(
-                i, np.mean(ar), ss))
-            true_w_samples.append(samples[0])
+                i, np.mean(acc), ss))
+            true_w_samples.append(samples)
         true_w_samples = np.vstack(true_w_samples)
 
         # Run the LSIF-based inference
