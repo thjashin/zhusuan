@@ -70,23 +70,6 @@ def mean_field_variational(layer_sizes, n_particles):
 
 
 @zs.reuse('variational')
-def fully_connected_variational(layer_sizes, n_particles):
-    w0 = tf.random_normal([n_particles, 100])
-    w0 = layers.fully_connected(w0, 1024)
-    N = layer_sizes[1] * (layer_sizes[0] + 1)
-    w0 = layers.fully_connected(w0, N)
-    w0 = layers.fully_connected(w0, N, activation_fn=None)
-    w0 = tf.reshape(w0, [n_particles, 1, layer_sizes[1], layer_sizes[0] + 1])
-
-    w1 = tf.random_normal([n_particles, 50])
-    w1 = layers.fully_connected(w1, 100)
-    w1 = layers.fully_connected(w1, 51)
-    w1 = layers.fully_connected(w1, 51, activation_fn=None)
-    w1 = tf.reshape(w1, [n_particles, 1, 1, 51])
-    return w0, w1
-
-
-@zs.reuse('variational')
 def deconv_variational(layer_sizes, n_particles):
     w0 = tf.random_normal([n_particles, 100])
     w0 = layers.fully_connected(w0, 24)
@@ -97,7 +80,7 @@ def deconv_variational(layer_sizes, n_particles):
                                  padding='VALID', activation_fn=None)
     w0 = tf.transpose(w0, [0, 3, 1, 2])
     _assert_w0_shape = tf.assert_equal(tf.shape(w0),
-                                       [n_particles, 1, 50, 9], 
+                                       [n_particles, 1, 50, 9],
                                        message="w0 shape wrong")
 
     w1 = tf.random_normal([n_particles, 50])
@@ -118,6 +101,23 @@ def deconv_variational(layer_sizes, n_particles):
 def run(dataset_name, logger, rng):
     tf.reset_default_graph()
     tf.set_random_seed(1234)
+
+    @zs.reuse('variational')
+    def fully_connected_variational(layer_sizes, n_particles):
+        w0 = tf.random_normal([n_particles, 100])
+        w0 = layers.fully_connected(w0, 1024)
+        N = layer_sizes[1] * (layer_sizes[0] + 1)
+        w0 = layers.fully_connected(w0, N)
+        w0 = layers.fully_connected(w0, N, activation_fn=None)
+        w0 = tf.reshape(w0,
+                        [n_particles, 1, layer_sizes[1], layer_sizes[0] + 1])
+
+        w1 = tf.random_normal([n_particles, 50])
+        w1 = layers.fully_connected(w1, 100)
+        w1 = layers.fully_connected(w1, 51)
+        w1 = layers.fully_connected(w1, 51, activation_fn=None)
+        w1 = tf.reshape(w1, [n_particles, 1, 1, 51])
+        return w0, w1
 
     infer_str = ['mean field', 'fully connected', 'deconv']
     infer_func = [
@@ -239,7 +239,7 @@ def run(dataset_name, logger, rng):
             tf.expand_dims(h_, 1))
         # alpha: [n_basis]
         alpha = tf.squeeze(alpha, axis=1)
-        alpha = tf.Print(alpha, [alpha], message="alpha: ", summarize=20)
+        # alpha = tf.Print(alpha, [alpha], message="alpha: ", summarize=20)
         # alpha = tf.maximum(alpha, 0)
         return alpha
 
@@ -249,13 +249,12 @@ def run(dataset_name, logger, rng):
         w_samples = tf.expand_dims(w_samples, 1)
         w_basis = tf.expand_dims(w_basis, 0)
         pairwise_dist = tf.sqrt(
-            tf.reduce_sum(tf.square(w_samples - w_basis), [1, 2, 3]))
+            tf.reduce_sum(tf.square(w_samples - w_basis), [-1, -2, -3]))
         k = n_w_samples * n_w_basis // 2
-        pairwise_dist = tf.Print(pairwise_dist, [tf.shape(pairwise_dist), k])
         top_k_values = tf.nn.top_k(tf.reshape(pairwise_dist, [-1]), k=k).values
         kernel_width = top_k_values[-1]
-        kernel_width = tf.Print(kernel_width, [kernel_width],
-                                message="kernel_width: ")
+        # kernel_width = tf.Print(kernel_width, [kernel_width],
+        #                         message="kernel_width: ")
         return kernel_width
 
     def optimal_ratio(x, qw_samples, pw_samples):
@@ -268,7 +267,7 @@ def run(dataset_name, logger, rng):
         ratio = tf.reduce_sum(tf.expand_dims(alpha, 0) * phi_x, 1)
         ratio = tf.maximum(ratio, 1e-8)
         # ratio: [N]
-        ratio = tf.Print(ratio, [ratio], message="ratio: ", summarize=20)
+        # ratio = tf.Print(ratio, [ratio], message="ratio: ", summarize=20)
         return ratio
 
     def log_conditional(observed):
