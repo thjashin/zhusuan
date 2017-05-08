@@ -281,6 +281,12 @@ def run(dataset_name, logger, rng):
         tf.log(optimal_ratio(qw0, pw0, tf.stop_gradient(qw0))))
     w1_kl_term = -tf.reduce_mean(
         tf.log(optimal_ratio(qw1, pw1, tf.stop_gradient(qw1))))
+    # w0_kl_term = tf.reduce_mean(
+    #     tf.log(optimal_ratio(qw0, tf.stop_gradient(qw0),
+    #                          tf.stop_gradient(pw0))))
+    # w1_kl_term = tf.reduce_mean(
+    #     tf.log(optimal_ratio(qw1, tf.stop_gradient(qw1),
+    #                          tf.stop_gradient(pw1))))
     # prior_term = tf.stop_gradient(prior_term)
     ll_term = tf.reduce_mean(eq_ll)
     lower_bound = ll_term - w0_kl_term - w1_kl_term
@@ -413,7 +419,8 @@ if __name__ == '__main__':
 
     logger = logging.getLogger('bnn_lsif')
     logger.setLevel(logging.DEBUG)
-    log_path = 'logs/bnn_lsif/' + FLAGS.dataset + '/log'
+    log_path = 'logs/bnn_lsif/' + FLAGS.dataset + '/log' + \
+        time.strftime("%Y%m%d-%H%M%S")
     makedirs(log_path)
     info_file_handler = logging.FileHandler(log_path)
     info_file_handler.setLevel(logging.INFO)
