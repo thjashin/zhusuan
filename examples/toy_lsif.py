@@ -54,7 +54,7 @@ if __name__ == "__main__":
     kde_batch_size = 2000
 
     # LSIF parameters
-    kernel_width = 0.2
+    # kernel_width = 0.2
     lambda_ = 0.01
 
     # Build the computation graph
