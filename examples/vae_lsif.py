@@ -70,7 +70,7 @@ if __name__ == "__main__":
     n_x = x_train.shape[1]
 
     # Define model parameters
-    n_z = 10
+    n_z = 8
 
     # Define training/evaluation parameters
     lb_samples = 20
@@ -190,26 +190,32 @@ if __name__ == "__main__":
     observed = {'x': x_obs, 'z': qz_samples}
     model, z, _ = vae(observed, n, n_x, n_z, n_particles, is_training)
     log_pz, log_px_z = model.local_log_prob(['z', 'x'])
-    ratio_t = tf.exp(log_pz - log_qz)
-    # log_pz = tf.Print(log_pz, [tf.reduce_mean(ratio_t, 0)], message="ratio_t: ",
-    #                   summarize=20)
-    kl_term_t = tf.reduce_mean(log_qz - log_pz)
-    # kl_term_t = tf.Print(kl_term_t, [log_qz], message="log_qz:", summarize=20)
-    # kl_term_t = tf.Print(kl_term_t, [log_pz], message="log_pz:", summarize=20)
     eq_ll = tf.reduce_mean(log_px_z)
 
     pz_samples = z.sample(n_samples=n_particles)
+    qz_mu, qz_var = tf.nn.moments(qz_samples, axes=[0], keep_dims=True)
+    qz_std = tf.sqrt(qz_var)
+    qz_tilde = (qz_samples - qz_mu) / qz_std
+    rz = zs.distributions.Normal(qz_mu, tf.log(qz_std),
+                                 is_reparameterized=False, group_event_ndims=1)
+    log_rz = rz.log_prob(qz_samples)
+    log_ratio_t = log_rz - log_qz
+    ratio_t = tf.exp(log_ratio_t)
+    kl_term_t = -tf.reduce_mean(log_ratio_t)
+
     pz = tf.transpose(pz_samples, [1, 0, 2])
-    qz = tf.transpose(qz_samples, [1, 0, 2])
+    qz_tilde = tf.transpose(qz_tilde, [1, 0, 2])
     # kl_term = -tf.reduce_mean(
     #     tf.log(optimal_ratio(qz, pz, tf.stop_gradient(qz))))
     # kl_term = tf.reduce_mean(
     #     tf.log(optimal_ratio(qz, tf.stop_gradient(qz), tf.stop_gradient(pz))))
-    ratio = optimal_ratio(qz, tf.stop_gradient(pz), tf.stop_gradient(qz))
+    ratio = optimal_ratio(qz_tilde, tf.stop_gradient(pz), tf.stop_gradient(qz_tilde))
+    # ratio = optimal_ratio(qz, tf.stop_gradient(qz), tf.stop_gradient(pz))
     # ratio = tf.Print(ratio, [tf.reduce_mean(ratio, 1)], message="ratio: ",
     #                  summarize=20)
     kl_term = -tf.reduce_mean(tf.log(ratio))
-    lower_bound = eq_ll - kl_term
+    # kl_term = tf.reduce_mean(tf.log(ratio))
+    lower_bound = eq_ll + tf.reduce_mean(log_pz - log_rz) - kl_term
 
     learning_rate_ph = tf.placeholder(tf.float32, shape=[], name='lr')
     optimizer = tf.train.AdamOptimizer(learning_rate_ph, epsilon=1e-4)
@@ -257,7 +263,7 @@ if __name__ == "__main__":
                                 learning_rate_ph: learning_rate,
                                 n_particles: lb_samples,
                                 is_training: True})
-                print('Iter {}: lb = {}, kl = {}, kl_t = {}'.format(t, lb, kl, kl_t))
+                # print('Iter {}: lb = {}, kl = {}, kl_t = {}'.format(t, lb, kl, kl_t))
 
                 # print(px.shape, qx.shape)
                 # print(q_mean.shape, q_logstd.shape)
