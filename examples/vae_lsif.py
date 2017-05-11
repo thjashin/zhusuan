@@ -70,10 +70,10 @@ if __name__ == "__main__":
     n_x = x_train.shape[1]
 
     # Define model parameters
-    n_z = 1
+    n_z = 10
 
     # Define training/evaluation parameters
-    lb_samples = 100
+    lb_samples = 20
     ll_samples = 1000
     epoches = 3000
     batch_size = 100
@@ -84,13 +84,14 @@ if __name__ == "__main__":
     test_freq = 10
     test_batch_size = 400
     test_iters = x_test.shape[0] // test_batch_size
-    save_freq = 100
+    save_image_freq = 1
+    save_model_freq = 100
     result_path = "results/vae_lsif"
 
     # LSIF parameters
     # kernel_width = 0.05
     lambda_ = 0.001
-    n_basis = 100
+    n_basis = 20
 
     # Build the computation graph
     is_training = tf.placeholder(tf.bool, shape=[], name='is_training')
@@ -256,7 +257,7 @@ if __name__ == "__main__":
                                 learning_rate_ph: learning_rate,
                                 n_particles: lb_samples,
                                 is_training: True})
-                # print('Iter {}: kl = {}, kl_t = {}'.format(t, kl, kl_t))
+                print('Iter {}: lb = {}, kl = {}, kl_t = {}'.format(t, lb, kl, kl_t))
 
                 # print(px.shape, qx.shape)
                 # print(q_mean.shape, q_logstd.shape)
@@ -334,13 +335,14 @@ if __name__ == "__main__":
                 print('>>> TEST ({:.1f}s)'.format(time_test))
                 print('>> Test lower bound = {}'.format(np.mean(test_lbs)))
 
-            if epoch % save_freq == 0:
+            if epoch % save_image_freq == 0:
                 print('Saving images...')
                 images = sess.run(x_gen)
                 name = os.path.join(result_path,
                                     "vae.epoch.{}.png".format(epoch))
                 save_image_collections(images, name)
 
+            if epoch % save_model_freq == 0:
                 print('Saving model...')
                 save_path = os.path.join(result_path,
                                          "vae.epoch.{}.ckpt".format(epoch))
