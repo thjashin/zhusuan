@@ -209,12 +209,12 @@ if __name__ == "__main__":
     #     tf.log(optimal_ratio(qz, pz, tf.stop_gradient(qz))))
     # kl_term = tf.reduce_mean(
     #     tf.log(optimal_ratio(qz, tf.stop_gradient(qz), tf.stop_gradient(pz))))
-    ratio = optimal_ratio(qz_tilde, tf.stop_gradient(pz), tf.stop_gradient(qz_tilde))
-    # ratio = optimal_ratio(qz, tf.stop_gradient(qz), tf.stop_gradient(pz))
+    # ratio = optimal_ratio(qz_tilde, tf.stop_gradient(pz), tf.stop_gradient(qz_tilde))
+    ratio = optimal_ratio(qz_tilde, tf.stop_gradient(qz_tilde), tf.stop_gradient(pz))
     # ratio = tf.Print(ratio, [tf.reduce_mean(ratio, 1)], message="ratio: ",
     #                  summarize=20)
-    kl_term = -tf.reduce_mean(tf.log(ratio))
-    # kl_term = tf.reduce_mean(tf.log(ratio))
+    # kl_term = -tf.reduce_mean(tf.log(ratio))
+    kl_term = tf.reduce_mean(tf.log(ratio))
     lower_bound = eq_ll + tf.reduce_mean(log_pz - log_rz) - kl_term
 
     learning_rate_ph = tf.placeholder(tf.float32, shape=[], name='lr')
