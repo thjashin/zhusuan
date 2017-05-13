@@ -70,7 +70,7 @@ if __name__ == "__main__":
     n_x = x_train.shape[1]
 
     # Define model parameters
-    n_z = 8
+    n_z = 32
 
     # Define training/evaluation parameters
     lb_samples = 20
@@ -84,14 +84,15 @@ if __name__ == "__main__":
     test_freq = 10
     test_batch_size = 400
     test_iters = x_test.shape[0] // test_batch_size
-    save_image_freq = 1
+    save_image_freq = 10
     save_model_freq = 100
     result_path = "results/vae_lsif"
 
     # LSIF parameters
     # kernel_width = 0.05
     lambda_ = 0.001
-    n_basis = 20
+    n_basis = 10
+    check = False
 
     # Build the computation graph
     is_training = tf.placeholder(tf.bool, shape=[], name='is_training')
@@ -163,7 +164,6 @@ if __name__ == "__main__":
         return kernel_width
 
     def optimal_ratio(z, qz_samples, pz_samples):
-        # z = tf.Print(z, [tf.shape(z), tf.shape(qz_samples), tf.shape(pz_samples)])
         # z, qz_samples, pz_samples: [n, n_particles, n_z]
         z_samples = tf.concat([qz_samples, pz_samples], axis=1)
         # z_basis: [n, n_basis, n_z]
@@ -180,13 +180,10 @@ if __name__ == "__main__":
         # ratio = tf.Print(ratio, [ratio], message="ratio: ", summarize=20)
         return ratio
 
-    variational, qz_mean, qz_logstd = q_net({}, x, n_z, n_particles, is_training)
+    variational, qz_mean, qz_logstd = q_net({}, x, n_z, n_particles,
+                                            is_training)
     qz_samples, log_qz = variational.query('z', outputs=True,
                                            local_log_prob=True)
-    # qz_samples = tf.Print(qz_samples, [qz_mean, qz_logstd], "qz:",
-    #                       summarize=20)
-    # qz_samples = tf.Print(qz_samples, [qz_samples], message="qz_samples:",
-    #                       summarize=20)
     observed = {'x': x_obs, 'z': qz_samples}
     model, z, _ = vae(observed, n, n_x, n_z, n_particles, is_training)
     log_pz, log_px_z = model.local_log_prob(['z', 'x'])
@@ -199,22 +196,21 @@ if __name__ == "__main__":
     rz = zs.distributions.Normal(qz_mu, tf.log(qz_std),
                                  is_reparameterized=False, group_event_ndims=1)
     log_rz = rz.log_prob(qz_samples)
-    log_ratio_t = log_rz - log_qz
-    ratio_t = tf.exp(log_ratio_t)
-    kl_term_t = -tf.reduce_mean(log_ratio_t)
+    if check:
+        log_ratio_t = log_rz - log_qz
+        ratio_t = tf.exp(log_ratio_t)
+        kl_term_t = -tf.reduce_mean(log_ratio_t)
 
     pz = tf.transpose(pz_samples, [1, 0, 2])
     qz_tilde = tf.transpose(qz_tilde, [1, 0, 2])
-    # kl_term = -tf.reduce_mean(
-    #     tf.log(optimal_ratio(qz, pz, tf.stop_gradient(qz))))
-    # kl_term = tf.reduce_mean(
-    #     tf.log(optimal_ratio(qz, tf.stop_gradient(qz), tf.stop_gradient(pz))))
-    # ratio = optimal_ratio(qz_tilde, tf.stop_gradient(pz), tf.stop_gradient(qz_tilde))
-    ratio = optimal_ratio(qz_tilde, tf.stop_gradient(qz_tilde), tf.stop_gradient(pz))
-    # ratio = tf.Print(ratio, [tf.reduce_mean(ratio, 1)], message="ratio: ",
-    #                  summarize=20)
-    # kl_term = -tf.reduce_mean(tf.log(ratio))
-    kl_term = tf.reduce_mean(tf.log(ratio))
+    ratio_pq = optimal_ratio(qz_tilde, tf.stop_gradient(pz),
+                             tf.stop_gradient(qz_tilde))
+    ratio_qp = optimal_ratio(qz_tilde, tf.stop_gradient(qz_tilde),
+                             tf.stop_gradient(pz))
+    # kl_term = -tf.reduce_mean(tf.log(ratio_pq))
+    # kl_term = tf.reduce_mean(tf.log(ratio_qp))
+    kl_term = 0.5 * (tf.reduce_mean(tf.log(ratio_qp)) -
+                     tf.reduce_mean(tf.log(ratio_pq)))
     lower_bound = eq_ll + tf.reduce_mean(log_pz - log_rz) - kl_term
 
     learning_rate_ph = tf.placeholder(tf.float32, shape=[], name='lr')
@@ -255,70 +251,22 @@ if __name__ == "__main__":
             for t in range(iters):
                 x_batch = x_train[t * batch_size:(t + 1) * batch_size]
                 x_batch_bin = sess.run(x_bin, feed_dict={x_orig: x_batch})
-                # _, lb, kl, kl_t, px, qx, q_mean, q_logstd, est_r, true_r = sess.run(
-                #     [infer, lower_bound, kl_term, kl_term_t,
-                #      pz_samples, qz_samples, qz_mean, qz_logstd, ratio, ratio_t],
-                _, lb, kl, kl_t = sess.run([infer, lower_bound, kl_term, kl_term_t],
-                     feed_dict={x: x_batch_bin,
-                                learning_rate_ph: learning_rate,
-                                n_particles: lb_samples,
-                                is_training: True})
-                # print('Iter {}: lb = {}, kl = {}, kl_t = {}'.format(t, lb, kl, kl_t))
-
-                # print(px.shape, qx.shape)
-                # print(q_mean.shape, q_logstd.shape)
-                # print(est_r.shape, true_r.shape)
-                # qx = qx.ravel()
-                # px = px.ravel()
-                # q_mean = q_mean.ravel()
-                # q_std = np.exp(q_logstd).ravel()
-                # true_r = true_r.ravel()
-                # est_r = est_r.ravel()
-                #
-                # lower_box = -4
-                # upper_box = 4
-                #
-                # def kde(xs, mu, batch_size, kde_stdev):
-                #     mu_n = len(mu)
-                #     assert mu_n % batch_size == 0
-                #     xs_row = np.expand_dims(xs, 1)
-                #     ys = np.zeros(xs.shape)
-                #     for b in range(mu_n // batch_size):
-                #         mu_col = np.expand_dims(
-                #             mu[b * batch_size:(b + 1) * batch_size], 0)
-                #         ys += (1 / np.sqrt(2 * np.pi) / kde_stdev) * \
-                #               np.mean(np.exp((-0.5 / kde_stdev ** 2) *
-                #                              np.square(xs_row - mu_col)), 1)
-                #     ys /= (mu_n / batch_size)
-                #     return ys
-                #
-                # # Plot 1: q, p distribution and samples
-                # xs = np.linspace(-5, 5, 1000)
-                # ax = plt.subplot(2, 1, 1)
-                # q_curve = kde(xs, qx, lb_samples, 0.1)
-                # p_curve = kde(xs, px, lb_samples, 0.1)
-                # ax.plot(xs, q_curve)
-                # ax.plot(xs, p_curve)
-                # ax.plot(xs, stats.norm.pdf(xs, loc=q_mean, scale=q_std),
-                #         label="q")
-                # ax.plot(xs, stats.norm.pdf(xs, loc=0, scale=1), label="p")
-                # ax.set_xlim(lower_box, upper_box)
-                # ax.legend()
-                #
-                # # Plot 2: True ratio vs. estimated ratio (LSIF)
-                # ax = plt.subplot(2, 1, 2)
-                # idx = np.argsort(qx)
-                # # True ratio
-                # ax.plot(qx[idx], true_r[idx], '-o', label="True q/p",
-                #         markersize=2)
-                # # Estimated ratio (LSIF)
-                # ax.plot(qx[idx], est_r[idx], '-o', label="Est. q/p (LSIF)",
-                #         markersize=2)
-                # ax.set_xlim(lower_box, upper_box)
-                # ax.legend()
-                #
-                # plt.show()
-
+                if check:
+                    _, lb, kl, kl_t = sess.run(
+                        [infer, lower_bound, kl_term, kl_term_t],
+                        feed_dict={x: x_batch_bin,
+                                   learning_rate_ph: learning_rate,
+                                   n_particles: lb_samples,
+                                   is_training: True})
+                    print('Iter {}: lb = {}, kl = {}, kl_t = {}'
+                          .format(t, lb, kl, kl_t))
+                else:
+                    _, lb, kl = sess.run(
+                        [infer, lower_bound, kl_term],
+                        feed_dict={x: x_batch_bin,
+                                   learning_rate_ph: learning_rate,
+                                   n_particles: lb_samples,
+                                   is_training: True})
                 lbs.append(lb)
                 kls.append(kl)
 
