@@ -6,17 +6,16 @@ from __future__ import print_function
 from __future__ import division
 import os
 import time
+import logging
 
 import tensorflow as tf
 from tensorflow.contrib import layers
 from six.moves import range
 import numpy as np
-import matplotlib.pyplot as plt
-from scipy import stats
 import zhusuan as zs
 
 from examples import conf
-from examples.utils import dataset, save_image_collections
+from examples.utils import dataset, save_image_collections, makedirs
 
 
 @zs.reuse('model')
@@ -45,16 +44,18 @@ def q_net(observed, x, n_z, n_particles, is_training):
         normalizer_params = {'is_training': is_training,
                              'updates_collections': None}
         lz_x = layers.fully_connected(
-            tf.to_float(x), 500, normalizer_fn=layers.batch_norm,
+            tf.to_float(x), 200, normalizer_fn=layers.batch_norm,
             normalizer_params=normalizer_params)
-        lz_x = layers.fully_connected(
-            lz_x, 500, normalizer_fn=layers.batch_norm,
-            normalizer_params=normalizer_params)
-        z_mean = layers.fully_connected(lz_x, n_z, activation_fn=None)
-        z_logstd = layers.fully_connected(lz_x, n_z, activation_fn=None)
-        z = zs.Normal('z', z_mean, z_logstd, n_samples=n_particles,
+        h_mean = layers.fully_connected(lz_x, 200, activation_fn=None)
+        h_logstd = tf.get_variable("h_logstd", shape=[200], dtype=tf.float32,
+                                   initializer=tf.constant_initializer(0.))
+        h = zs.Normal('h', h_mean, h_logstd, n_samples=n_particles,
                       group_event_ndims=1)
-    return variational, z_mean, z_logstd
+        lz_x = layers.fully_connected(
+            h, 200, normalizer_fn=layers.batch_norm,
+            normalizer_params=normalizer_params)
+        z = layers.fully_connected(lz_x, n_z, activation_fn=None)
+    return z
 
 
 if __name__ == "__main__":
@@ -86,13 +87,28 @@ if __name__ == "__main__":
     test_iters = x_test.shape[0] // test_batch_size
     save_image_freq = 10
     save_model_freq = 100
-    result_path = "results/vae_lsif"
+    result_path = "results/vae_lsif_" + time.strftime("%Y%m%d_%H%M%S")
 
     # LSIF parameters
     # kernel_width = 0.05
     lambda_ = 0.001
     n_basis = 10
-    check = False
+    check = True
+
+    # Set logger
+    logger = logging.getLogger('vae_lsif')
+    logger.setLevel(logging.DEBUG)
+    log_path = os.path.join(result_path, "log")
+    makedirs(log_path)
+    info_file_handler = logging.FileHandler(log_path)
+    info_file_handler.setLevel(logging.INFO)
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    logger.addHandler(info_file_handler)
+    logger.addHandler(console_handler)
+    logger.info(__file__)
+    with open(__file__) as f:
+        logger.info(f.read())
 
     # Build the computation graph
     is_training = tf.placeholder(tf.bool, shape=[], name='is_training')
@@ -180,10 +196,7 @@ if __name__ == "__main__":
         # ratio = tf.Print(ratio, [ratio], message="ratio: ", summarize=20)
         return ratio
 
-    variational, qz_mean, qz_logstd = q_net({}, x, n_z, n_particles,
-                                            is_training)
-    qz_samples, log_qz = variational.query('z', outputs=True,
-                                           local_log_prob=True)
+    qz_samples = q_net({}, x, n_z, n_particles, is_training)
     observed = {'x': x_obs, 'z': qz_samples}
     model, z, _ = vae(observed, n, n_x, n_z, n_particles, is_training)
     log_pz, log_px_z = model.local_log_prob(['z', 'x'])
@@ -196,10 +209,6 @@ if __name__ == "__main__":
     rz = zs.distributions.Normal(qz_mu, tf.log(qz_std),
                                  is_reparameterized=False, group_event_ndims=1)
     log_rz = rz.log_prob(qz_samples)
-    if check:
-        log_ratio_t = log_rz - log_qz
-        ratio_t = tf.exp(log_ratio_t)
-        kl_term_t = -tf.reduce_mean(log_ratio_t)
 
     pz = tf.transpose(pz_samples, [1, 0, 2])
     qz_tilde = tf.transpose(qz_tilde, [1, 0, 2])
@@ -207,10 +216,10 @@ if __name__ == "__main__":
                              tf.stop_gradient(qz_tilde))
     ratio_qp = optimal_ratio(qz_tilde, tf.stop_gradient(qz_tilde),
                              tf.stop_gradient(pz))
-    # kl_term = -tf.reduce_mean(tf.log(ratio_pq))
+    kl_term = -tf.reduce_mean(tf.log(ratio_pq))
     # kl_term = tf.reduce_mean(tf.log(ratio_qp))
-    kl_term = 0.5 * (tf.reduce_mean(tf.log(ratio_qp)) -
-                     tf.reduce_mean(tf.log(ratio_pq)))
+    # kl_term = 0.5 * (tf.reduce_mean(tf.log(ratio_qp)) -
+    #                  tf.reduce_mean(tf.log(ratio_pq)))
     lower_bound = eq_ll + tf.reduce_mean(log_pz - log_rz) - kl_term
 
     learning_rate_ph = tf.placeholder(tf.float32, shape=[], name='lr')
@@ -225,7 +234,8 @@ if __name__ == "__main__":
 
     params = tf.trainable_variables()
     for i in params:
-        print(i.name, i.get_shape())
+        logger.info('variable name = {}, shape = {}'
+                    .format(i.name, i.get_shape()))
 
     saver = tf.train.Saver(max_to_keep=10)
 
@@ -237,7 +247,7 @@ if __name__ == "__main__":
         ckpt_file = tf.train.latest_checkpoint(result_path)
         begin_epoch = 1
         if ckpt_file is not None:
-            print('Restoring model from {}...'.format(ckpt_file))
+            logger.info('Restoring model from {}...'.format(ckpt_file))
             begin_epoch = int(ckpt_file.split('.')[-2]) + 1
             saver.restore(sess, ckpt_file)
 
@@ -252,14 +262,14 @@ if __name__ == "__main__":
                 x_batch = x_train[t * batch_size:(t + 1) * batch_size]
                 x_batch_bin = sess.run(x_bin, feed_dict={x_orig: x_batch})
                 if check:
-                    _, lb, kl, kl_t = sess.run(
-                        [infer, lower_bound, kl_term, kl_term_t],
+                    _, lb, kl = sess.run(
+                        [infer, lower_bound, kl_term],
                         feed_dict={x: x_batch_bin,
                                    learning_rate_ph: learning_rate,
                                    n_particles: lb_samples,
                                    is_training: True})
-                    print('Iter {}: lb = {}, kl = {}, kl_t = {}'
-                          .format(t, lb, kl, kl_t))
+                    logger.info('Iter {}: lb = {}, kl = {}'
+                                .format(t, lb, kl))
                 else:
                     _, lb, kl = sess.run(
                         [infer, lower_bound, kl_term],
@@ -271,8 +281,8 @@ if __name__ == "__main__":
                 kls.append(kl)
 
             time_epoch += time.time()
-            print('Epoch {} ({:.1f}s): Lower bound = {}, kl = {}'.format(
-                epoch, time_epoch, np.mean(lbs), np.mean(kls)))
+            logger.info('Epoch {} ({:.1f}s): Lower bound = {}, kl = {}'
+                        .format(epoch, time_epoch, np.mean(lbs), np.mean(kls)))
 
             if epoch % test_freq == 0:
                 time_test = -time.time()
@@ -286,21 +296,22 @@ if __name__ == "__main__":
                                                   is_training: False})
                     test_lbs.append(test_lb)
                 time_test += time.time()
-                print('>>> TEST ({:.1f}s)'.format(time_test))
-                print('>> Test lower bound = {}'.format(np.mean(test_lbs)))
+                logger.info('>>> TEST ({:.1f}s)'.format(time_test))
+                logger.info('>> Test lower bound = {}'
+                            .format(np.mean(test_lbs)))
 
             if epoch % save_image_freq == 0:
-                print('Saving images...')
+                logger.info('Saving images...')
                 images = sess.run(x_gen)
                 name = os.path.join(result_path,
                                     "vae.epoch.{}.png".format(epoch))
                 save_image_collections(images, name)
 
             if epoch % save_model_freq == 0:
-                print('Saving model...')
+                logger.info('Saving model...')
                 save_path = os.path.join(result_path,
                                          "vae.epoch.{}.ckpt".format(epoch))
                 if not os.path.exists(os.path.dirname(save_path)):
                     os.makedirs(os.path.dirname(save_path))
                 saver.save(sess, save_path)
-                print('Done')
+                logger.info('Done')
