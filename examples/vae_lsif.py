@@ -85,13 +85,13 @@ if __name__ == "__main__":
     test_freq = 10
     test_batch_size = 400
     test_iters = x_test.shape[0] // test_batch_size
-    save_image_freq = 10
+    save_image_freq = 1
     save_model_freq = 100
     result_path = "results/vae_lsif_" + time.strftime("%Y%m%d_%H%M%S")
 
     # LSIF parameters
     # kernel_width = 0.05
-    lambda_ = 0.001
+    lambda_ = 0.00001
     n_basis = 10
     check = True
 
@@ -159,7 +159,7 @@ if __name__ == "__main__":
             tf.expand_dims(h_, 2))
         # alpha: [n, n_basis]
         alpha = tf.squeeze(alpha, axis=-1)
-        # alpha = tf.Print(alpha, [alpha], message="alpha: ", summarize=20)
+        alpha = tf.Print(alpha, [alpha], message="alpha: ", summarize=20)
         # alpha = tf.maximum(alpha, 0)
         return alpha
 
@@ -191,7 +191,7 @@ if __name__ == "__main__":
         # phi_z: [n, N, n_basis]
         phi_z = phi(z, z_basis, kernel_width)
         ratio = tf.reduce_sum(tf.expand_dims(alpha, 1) * phi_z, -1)
-        ratio = tf.maximum(ratio, 1e-16)
+        ratio = tf.maximum(ratio, 1e-32)
         # ratio: [n, N]
         # ratio = tf.Print(ratio, [ratio], message="ratio: ", summarize=20)
         return ratio
@@ -209,6 +209,11 @@ if __name__ == "__main__":
     rz = zs.distributions.Normal(qz_mu, tf.log(qz_std),
                                  is_reparameterized=False, group_event_ndims=1)
     log_rz = rz.log_prob(qz_samples)
+    # if check:
+    #     log_ratio_t = log_rz - log_qz
+    #     ratio_t = tf.exp(log_ratio_t)
+    #     kl_term_ac_t = -tf.reduce_mean(log_ratio_t)
+    #     kl_term_t = tf.reduce_mean(log_rz - log_pz) + kl_term_ac_t
 
     pz = tf.transpose(pz_samples, [1, 0, 2])
     qz_tilde = tf.transpose(qz_tilde, [1, 0, 2])
@@ -216,11 +221,12 @@ if __name__ == "__main__":
                              tf.stop_gradient(qz_tilde))
     ratio_qp = optimal_ratio(qz_tilde, tf.stop_gradient(qz_tilde),
                              tf.stop_gradient(pz))
-    kl_term = -tf.reduce_mean(tf.log(ratio_pq))
-    # kl_term = tf.reduce_mean(tf.log(ratio_qp))
-    # kl_term = 0.5 * (tf.reduce_mean(tf.log(ratio_qp)) -
-    #                  tf.reduce_mean(tf.log(ratio_pq)))
-    lower_bound = eq_ll + tf.reduce_mean(log_pz - log_rz) - kl_term
+    kl_term_ac = -tf.reduce_mean(tf.log(ratio_pq))
+    # kl_term_ac = tf.reduce_mean(tf.log(ratio_qp))
+    # kl_term_ac = 0.5 * (tf.reduce_mean(tf.log(ratio_qp)) -
+    #                     tf.reduce_mean(tf.log(ratio_pq)))
+    kl_term = tf.reduce_mean(log_rz - log_pz) + kl_term_ac
+    lower_bound = eq_ll - kl_term
 
     learning_rate_ph = tf.placeholder(tf.float32, shape=[], name='lr')
     optimizer = tf.train.AdamOptimizer(learning_rate_ph, epsilon=1e-4)
@@ -262,14 +268,15 @@ if __name__ == "__main__":
                 x_batch = x_train[t * batch_size:(t + 1) * batch_size]
                 x_batch_bin = sess.run(x_bin, feed_dict={x_orig: x_batch})
                 if check:
-                    _, lb, kl = sess.run(
-                        [infer, lower_bound, kl_term],
+                    _, lb, kl, qz_mu_, qz_std_ = sess.run(
+                        [infer, lower_bound, kl_term, qz_mu, qz_std],
                         feed_dict={x: x_batch_bin,
                                    learning_rate_ph: learning_rate,
                                    n_particles: lb_samples,
                                    is_training: True})
-                    logger.info('Iter {}: lb = {}, kl = {}'
-                                .format(t, lb, kl))
+                    print('Iter {}: lb = {}, kl = {}'.format(t, lb, kl))
+                    print('qz_mu = {}, qz_std = {}'.format(np.mean(qz_mu_),
+                                                           np.mean(qz_std_)))
                 else:
                     _, lb, kl = sess.run(
                         [infer, lower_bound, kl_term],

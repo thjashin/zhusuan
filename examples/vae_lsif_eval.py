@@ -31,7 +31,7 @@ if __name__ == "__main__":
     n_x = x_train.shape[1]
 
     # Define model parameters
-    n_z = 8
+    n_z = 32
 
     # Define training/evaluation parameters
     test_batch_size = 400
@@ -40,11 +40,6 @@ if __name__ == "__main__":
     test_n_leapfrogs = 10
     test_n_chains = 10
     result_path = "results/vae_lsif"
-
-    # LSIF parameters
-    # kernel_width = 0.05
-    lambda_ = 0.001
-    n_basis = 20
 
     # Build the computation graph
     x = tf.placeholder(tf.int32, shape=[None, n_x], name='x')
