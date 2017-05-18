@@ -168,6 +168,7 @@ def planar_normalizing_flow(samples, log_probs, n_iters):
 
     # forward and log_det_jacobian
     z = tf.reshape(input_x, [-1, d])
+    log_probs = tf.reshape(log_probs, [-1])
     for iter in range(n_iters):
         scalar = tf.matmul(param_us[iter], param_ws[iter], name='scalar')
         scalar = tf.reshape(scalar, [])
@@ -192,6 +193,7 @@ def planar_normalizing_flow(samples, log_probs, n_iters):
         log_probs -= tf.log(det_ja)
         z = z + tf.matmul(activation, param_u, name='update')
     z = tf.reshape(z, tf.shape(input_x))
+    log_probs = tf.reshape(log_probs, tf.shape(input_x)[:-1])
 
     return z, log_probs
 
