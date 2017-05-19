@@ -133,7 +133,7 @@ def run(dataset_name, logger, rng):
     test_batch_size = 100
     test_iters = int(np.ceil(x_test.shape[0] / float(test_batch_size)))
     test_freq = 10
-    learning_rate = 0.001
+    learning_rate = 0.01
     anneal_lr_freq = 1000
     anneal_lr_rate = 0.75
 
@@ -169,22 +169,24 @@ def run(dataset_name, logger, rng):
         return tf.add_n(log_pws) + log_py_xw * N
 
     variational = mean_field_variational(layer_sizes, n_particles)
-    qw0_outputs, qw1_outputs = variational.query(w_names, outputs=True,
-                                                 local_log_prob=True)
-    qw0_samples, log_qw0 = qw0_outputs
-    qw1_samples, log_qw1 = qw1_outputs
-    qw0_samples = tf.reshape(qw0_samples, [n_particles, 1, n_hiddens[0] * (n_x + 1)])
-    qw1_samples = tf.reshape(qw1_samples, [n_particles, 1, 1 * (n_hiddens[0] + 1)])
-    qw0_samples, log_qw0 = zs.planar_normalizing_flow(qw0_samples, log_qw0,
-                                                      n_iters=10)
-    qw1_samples, log_qw1 = zs.planar_normalizing_flow(qw1_samples, log_qw1,
-                                                      n_iters=10)
-    qw0_samples = tf.reshape(qw0_samples, [n_particles, 1, 50, n_x + 1])
-    qw1_samples = tf.reshape(qw1_samples, [n_particles, 1, 1, 50 + 1])
-    qw_outputs = [(qw0_samples, log_qw0), (qw1_samples, log_qw1)]
+    qw_outputs = variational.query(w_names, outputs=True,
+                                   local_log_prob=True)
+    # qw0_outputs, qw1_outputs = variational.query(w_names, outputs=True,
+    #                                              local_log_prob=True)
+    # qw0_samples, log_qw0 = qw0_outputs
+    # qw1_samples, log_qw1 = qw1_outputs
+    # qw0_samples = tf.reshape(qw0_samples, [n_particles, 1, n_hiddens[0] * (n_x + 1)])
+    # qw1_samples = tf.reshape(qw1_samples, [n_particles, 1, 1 * (n_hiddens[0] + 1)])
+    # qw0_samples, log_qw0 = zs.planar_normalizing_flow(qw0_samples, log_qw0,
+    #                                                   n_iters=10)
+    # qw1_samples, log_qw1 = zs.planar_normalizing_flow(qw1_samples, log_qw1,
+    #                                                   n_iters=10)
+    # qw0_samples = tf.reshape(qw0_samples, [n_particles, 1, 50, n_x + 1])
+    # qw1_samples = tf.reshape(qw1_samples, [n_particles, 1, 1, 50 + 1])
+    # qw_outputs = [(qw0_samples, log_qw0), (qw1_samples, log_qw1)]
     latent = dict(zip(w_names, qw_outputs))
     lower_bound = tf.reduce_mean(
-        zs.sgvb(log_joint, {'y': y_obs}, latent, axis=0))
+        zs.sgvb(log_joint, {'y': y_obs, 'y_prec': q_prec}, latent, axis=0))
 
     observed = dict((w_name, latent[w_name][0]) for w_name in w_names)
     observed.update({'y': y_obs})
