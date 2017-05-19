@@ -42,11 +42,12 @@ if __name__ == "__main__":
     np.random.seed(1234)
 
     # Define model parameters
-    n_samples = 10000
+    n_samples = 100
     lower_box = -5
     upper_box = 5
-    kde_batch_size = 2000
-    learning_rate = 0.001
+    kde_batch_size = 100
+    kde_width = 0.5
+    learning_rate = 0.01
 
     # LSIF parameters
     # kernel_width = 0.2
@@ -155,7 +156,7 @@ if __name__ == "__main__":
         # phi_x: [N, n_basis]
         phi_x = phi(x, w_basis, kernel_width)
         ratio = tf.reduce_sum(tf.expand_dims(alpha, 0) * phi_x, 1)
-        # ratio = tf.maximum(0., ratio)
+        ratio = tf.maximum(1e-8, ratio)
         # ratio: [N]
         return tf.Print(ratio, [ratio], message="ratio: ", summarize=20)
 
@@ -164,7 +165,8 @@ if __name__ == "__main__":
         with zs.BayesianNet():
             z = zs.Normal('z', [0.], 0., n_samples=n_particles)
             lx_z = layers.fully_connected(z, 10)
-            x = layers.fully_connected(lx_z, 1)
+            lx_z = layers.fully_connected(lx_z, 10)
+            x = layers.fully_connected(lx_z, 1, activation_fn=None)
             x = tf.squeeze(x, axis=1)
             return x
 
@@ -182,7 +184,7 @@ if __name__ == "__main__":
         for t in range(iters):
             _, lb, samples = sess.run(
                 [implicit_infer, implicit_lower_bound, qx_samples],
-                feed_dict={n_particles: 100})
+                feed_dict={n_particles: n_samples})
             print('Iteration {}: lower bound = {}'.format(t, lb))
 
             def kde(xs, mu, batch_size, kde_stdev):
@@ -204,7 +206,7 @@ if __name__ == "__main__":
                 xs = np.linspace(-5, 5, 1000)
                 true_curve = 0.5 * stats.norm.pdf(xs, -3., 1.) + \
                              0.5 * stats.norm.pdf(xs, 3., 1.)
-                q_curve = kde(xs, samples, 10, 0.1)
+                q_curve = kde(xs, samples, kde_batch_size, kde_width)
                 ax.plot(xs, true_curve)
                 ax.plot(xs, q_curve)
                 ax.set_xlim(lower_box, upper_box)
