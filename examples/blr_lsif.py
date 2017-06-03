@@ -83,9 +83,12 @@ def compute_tickers(probs, n_bins=20):
 def contourf(x, y, z):
     tickers = compute_tickers(z)
     palette = cm.PuBu
-    plt.contourf(x, y, z, tickers,
-                 cm=palette,
-                 norm=colors.BoundaryNorm(tickers, ncolors=palette.N))
+    pcon = plt.contourf(x, y, z, tickers,
+                        cm=palette,
+                        norm=colors.BoundaryNorm(tickers, ncolors=palette.N))
+    # This is the fix for the white lines between contour levels
+    for c in pcon.collections:
+        c.set_edgecolor("face")
     plt.colorbar()
 
 
@@ -97,6 +100,7 @@ if __name__ == "__main__":
     N = 200
     D = 2
     learning_rate = 1
+    learning_rate_flow = 0.03
     learning_rate_g = 0.01
     t0 = 100
     t0_d = 100
@@ -113,7 +117,7 @@ if __name__ == "__main__":
 
     # LSIF parameters
     # kernel_width = 0.5
-    lambda_ = 0.001
+    lambda_ = 0.1
     n_basis = 100
 
     # Build the computation graph
@@ -145,14 +149,28 @@ if __name__ == "__main__":
     # [n_particles, D], [n_particles]
     vw_samples, log_qw = variational.query('w', outputs=True,
                                            local_log_prob=True)
-    lower_bound = tf.reduce_mean(
-        log_joint({'w': vw_samples, 'y': y_obs})[0] - log_qw)
-
+    # lower_bound = tf.reduce_mean(
+    #     log_joint({'w': vw_samples, 'y': y_obs})[0] - log_qw)
+    #
     learning_rate_ph = tf.placeholder(tf.float32, shape=[], name='lr')
-    optimizer = tf.train.AdamOptimizer(learning_rate_ph)
+    # optimizer = tf.train.AdamOptimizer(learning_rate_ph)
     v_parameters = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
                                      scope="variational")
-    infer = optimizer.minimize(-lower_bound, var_list=v_parameters)
+    # infer = optimizer.minimize(-lower_bound, var_list=v_parameters)
+
+    # Normalizing flow
+    def flow(samples, log_prob):
+        with tf.variable_scope("flow"):
+            return zs.planar_normalizing_flow(vw_samples, log_qw, n_iters=80)
+
+    qw_samples_flow, log_qw_flow = flow(vw_samples, log_qw)
+    lower_bound_flow = tf.reduce_mean(
+        log_joint({'w': qw_samples_flow, 'y': y_obs})[0] - log_qw_flow)
+    flow_parameters = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
+                                        scope="flow")
+    optimizer_flow = tf.train.AdamOptimizer(learning_rate_ph)
+    infer_flow = optimizer_flow.minimize(
+        -lower_bound_flow, var_list=v_parameters + flow_parameters)
 
     # HMC
     n_chains = 100
@@ -265,12 +283,11 @@ if __name__ == "__main__":
         return ratio
 
     eq_ll = log_joint({'w': qw_samples, 'y': y_obs})[2]
-    prior_term = tf.reduce_mean(
-        tf.log(optimal_ratio(qw_samples, tf.stop_gradient(qw_samples),
-                             tf.stop_gradient(pw_samples))))
-    # prior_term = -tf.reduce_mean(
-    #     tf.log(optimal_ratio(qw_samples, tf.stop_gradient(pw_samples),
-    #                          tf.stop_gradient(qw_samples))))
+    # prior_term = tf.reduce_mean(
+    #     tf.log(optimal_ratio(qw_samples, tf.stop_gradient(qw_samples),
+    #                          tf.stop_gradient(pw_samples))))
+    prior_term = -tf.reduce_mean(
+        tf.log(optimal_ratio(qw_samples, pw_samples, qw_samples)))
     # prior_term = tf.stop_gradient(prior_term)
     ll_term = tf.reduce_mean(-eq_ll)
     # gen_obj = prior_term
@@ -281,7 +298,7 @@ if __name__ == "__main__":
     g_optimizer = tf.train.AdamOptimizer(learning_rate_ph)
     g_infer = g_optimizer.minimize(gen_obj, var_list=g_parameters)
 
-    def check_grads(loss, var_list):
+    def check_grads(optimizer, loss, var_list):
         grads_to_be_check = optimizer.compute_gradients(loss,
                                                         var_list=var_list)
         if not grads_to_be_check:
@@ -295,8 +312,9 @@ if __name__ == "__main__":
                       for g in grads_to_be_check_]))
         return grads_to_be_check_mean, grads_to_be_check_var
 
-    ll_grad_mean, ll_grad_var = check_grads(ll_term, g_parameters)
-    prior_grad_mean, prior_grad_var = check_grads(prior_term, g_parameters)
+    ll_grad_mean, ll_grad_var = check_grads(g_optimizer, ll_term, g_parameters)
+    prior_grad_mean, prior_grad_var = check_grads(g_optimizer, prior_term,
+                                                  g_parameters)
 
     # Plotting
     w_ph = tf.placeholder(tf.float32, shape=[None, D], name='w_ph')
@@ -322,19 +340,33 @@ if __name__ == "__main__":
         train_y = np.squeeze(train_y)
 
         # Run the mean-field variational inference
-        print('Starting Mean Field VI...')
+        # print('Starting Mean Field VI...')
+        # for epoch in range(1, epoches + 1):
+        #     lr = learning_rate * t0 / (t0 + epoch - 1)
+        #     time_epoch = -time.time()
+        #     _, lb = sess.run([infer, lower_bound],
+        #                      feed_dict={x: train_x,
+        #                                 y: train_y,
+        #                                 learning_rate_ph: lr,
+        #                                 n_particles: 100})
+        #     time_epoch += time.time()
+        #     if epoch % 100 == 0:
+        #         print('Epoch {} ({:.1f}s): Lower bound = {}'.format(
+        #             epoch, time_epoch, lb))
+
+        # Run variational inference with normalizing flows
+        print('Starting VI with normalizing flows...')
         for epoch in range(1, epoches + 1):
-            lr = learning_rate * t0 / (t0 + epoch - 1)
+            lr = learning_rate_flow * t0 / (t0 + epoch - 1)
             time_epoch = -time.time()
-            _, lb = sess.run([infer, lower_bound],
-                             feed_dict={x: train_x,
-                                        y: train_y,
-                                        learning_rate_ph: lr,
-                                        n_particles: 100})
+            _, lb_flow = sess.run([infer_flow, lower_bound_flow],
+                                  feed_dict={x: train_x,
+                                             y: train_y,
+                                             learning_rate_ph: lr,
+                                             n_particles: 100})
             time_epoch += time.time()
-            if epoch % 100 == 0:
-                print('Epoch {} ({:.1f}s): Lower bound = {}'.format(
-                    epoch, time_epoch, lb))
+            print('Epoch {} ({:.1f}s): Lower bound (flow) = {}'.format(
+                epoch, time_epoch, lb_flow))
 
         # Run hmc to get the ground truth posterior samples
         print('Starting HMC...')
@@ -369,7 +401,9 @@ if __name__ == "__main__":
                   .format(epoch, go, pv, lv))
 
             if epoch % plot_interval == 0:
-                # Draw the decision boundary
+                # ----------------------------
+                #  Draw the decision boundary
+                # ----------------------------
                 def draw_decision_boundary(x, w, y):
                     positive_x = x[y == 1, :]
                     negative_x = x[y == 0, :]
@@ -381,7 +415,8 @@ if __name__ == "__main__":
                     y_pred = 1.0 / (1 + np.exp(-np.sum(points * w, axis=1)))
                     grid_pred = np.reshape(y_pred, grid_x.shape)
 
-                    plt.pcolormesh(grid_x, grid_y, grid_pred)
+                    pcol = plt.pcolormesh(grid_x, grid_y, grid_pred)
+                    pcol.set_edgecolor('face')
                     plt.colorbar()
                     CS = plt.contour(grid_x, grid_y, grid_pred, colors='k',
                                      levels=np.array([0.25, 0.5, 0.75]))
@@ -389,12 +424,16 @@ if __name__ == "__main__":
                     plt.plot(positive_x[:, 0], positive_x[:, 1], 'x')
                     plt.plot(negative_x[:, 0], negative_x[:, 1], 'o')
 
-                plt.subplot(3, 3, 1)
+                # plt.subplot(3, 3, 1)
                 draw_decision_boundary(train_x, train_w_sample, train_y)
-                plt.title('Decision boundary')
+                # plt.title('Decision boundary')
+                plt.savefig('decision.pdf')
 
-                # Plot unnormalized true posterior
+                # ----------------------------------
+                #  Plot unnormalized true posterior
+                # ----------------------------------
                 # Generate a w grid
+                plt.figure()
                 w0 = np.linspace(lower_box, upper_box, 100)
                 w1 = np.linspace(lower_box, upper_box, 100)
                 w0_grid, w1_grid = np.meshgrid(w0, w1)
@@ -408,19 +447,26 @@ if __name__ == "__main__":
                                w_ph: w_points})
                 log_joint_grid = np.reshape(log_joint_points, w0_grid.shape)
 
-                plt.subplot(3, 3, 2)
+                # plt.subplot(3, 3, 2)
                 contourf(w0_grid, w1_grid, log_joint_grid)
                 plt.plot(train_w_sample[0], train_w_sample[1], 'x')
-                plt.title('Unnormalized true posterior')
+                # plt.title('Unnormalized true posterior')
+                plt.savefig('unnormalized.pdf')
 
-                # Plot ground true posterior samples by hmc
-                ax = plt.subplot(3, 3, 9)
-                ax.scatter(true_w_samples[:, 0], true_w_samples[:, 1], s=0.1)
-                ax.set_xlim(lower_box, upper_box)
-                ax.set_ylim(lower_box, upper_box)
-                plt.title('HMC posterior samples')
+                # --------------------------------------------
+                #  Plot ground truth posterior samples by hmc
+                # --------------------------------------------
+                plt.figure()
+                # plt.subplot(3, 3, 9)
+                plt.scatter(true_w_samples[:, 0], true_w_samples[:, 1], s=0.1)
+                plt.xlim(lower_box, upper_box)
+                plt.ylim(lower_box, upper_box)
+                # plt.title('HMC posterior samples')
+                plt.savefig('hmc_samples.pdf')
 
-                # Plot kde for the hmc posterior
+                # --------------------------------
+                #  Plot kde for the hmc posterior
+                # --------------------------------
                 point_prob = np.zeros((w_points.shape[0]))
                 kde_num_batches = true_w_samples.shape[0] // kde_batch_size
                 for b in range(kde_num_batches):
@@ -433,38 +479,83 @@ if __name__ == "__main__":
                 point_prob /= kde_num_batches
                 point_prob = np.reshape(point_prob, w0_grid.shape)
 
-                plt.subplot(3, 3, 8)
+                # plt.subplot(3, 3, 8)
+                plt.figure()
                 contourf(w0_grid, w1_grid, point_prob)
-                plt.title('HMC posterior KDE')
+                # plt.title('HMC posterior KDE')
+                plt.savefig('hmc_contour.pdf')
 
-                # Plot the gen/disc objectives
-                plt.subplot(3, 3, 7)
+                # ------------------------------
+                #  Plot the gen/disc objectives
+                # ------------------------------
+                # plt.subplot(3, 3, 7)
+                plt.figure()
                 plt.plot(gen_objs, '.')
-                plt.title('Generator objective')
+                # plt.title('Generator objective')
+                plt.savefig('generative_obj.pdf')
 
-                # Plot the variational posterior
-                log_v_points = sess.run(
-                    log_mean_field,
-                    feed_dict={x: train_x,
-                               y: train_y,
-                               n_particles: w_points.shape[0],
-                               w_ph: w_points})
-                log_v_grid = np.reshape(log_v_points, w0_grid.shape)
+                # --------------------------------
+                #  Plot the variational posterior
+                # --------------------------------
+                # log_v_points = sess.run(
+                #     log_mean_field,
+                #     feed_dict={x: train_x,
+                #                y: train_y,
+                #                n_particles: w_points.shape[0],
+                #                w_ph: w_points})
+                # log_v_grid = np.reshape(log_v_points, w0_grid.shape)
+                #
+                # # plt.subplot(3, 3, 4)
+                # plt.figure()
+                # contourf(w0_grid, w1_grid, log_v_grid)
+                # # plt.title('Mean field posterior')
+                # plt.savefig('mean_field.pdf')
 
-                plt.subplot(3, 3, 4)
-                contourf(w0_grid, w1_grid, log_v_grid)
-                plt.title('Mean field posterior')
+                # -------------------------------------
+                #  Plot the VI(flow) posterior samples
+                # -------------------------------------
+                samples = sess.run(qw_samples_flow,
+                                   feed_dict={n_particles: n_qw_samples})
+                plt.figure()
+                plt.scatter(samples[:, 0], samples[:, 1], s=0.1)
+                plt.xlim(lower_box, upper_box)
+                plt.ylim(lower_box, upper_box)
+                plt.savefig('flow_samples.pdf')
 
-                # Plot samples from the implicit posterior
+                # -------------------------------------
+                #  Plot kde for the VI(flow) posterior
+                # -------------------------------------
+                point_prob = np.zeros((w_points.shape[0]))
+                kde_num_batches = n_qw_samples // kde_batch_size
+                for b in range(kde_num_batches):
+                    sample_batch = samples[
+                                   b * kde_batch_size:(b + 1) * kde_batch_size]
+                    point_prob += sess.run(
+                        grid_prob_op,
+                        feed_dict={samples_ph: sample_batch,
+                                   points_ph: w_points})
+                point_prob /= kde_num_batches
+                point_prob = np.reshape(point_prob, w0_grid.shape)
+                plt.figure()
+                contourf(w0_grid, w1_grid, point_prob)
+                plt.savefig('flow_contour.pdf')
+
+                # ------------------------------------------
+                #  Plot samples from the implicit posterior
+                # ------------------------------------------
                 samples = sess.run(qw_samples,
                                    feed_dict={n_particles: n_qw_samples})
-                ax = plt.subplot(3, 3, 6)
-                ax.scatter(samples[:, 0], samples[:, 1], s=0.1)
-                ax.set_xlim(lower_box, upper_box)
-                ax.set_ylim(lower_box, upper_box)
-                plt.title('Implicit posterior samples')
+                # ax = plt.subplot(3, 3, 6)
+                plt.figure()
+                plt.scatter(samples[:, 0], samples[:, 1], s=0.1)
+                plt.xlim(lower_box, upper_box)
+                plt.ylim(lower_box, upper_box)
+                # plt.title('Implicit posterior samples')
+                plt.savefig('implicit_samples.pdf')
 
-                # Plot kde for the implicit posterior
+                # -------------------------------------
+                #  Plot kde for the implicit posterior
+                # -------------------------------------
                 point_prob = np.zeros((w_points.shape[0]))
                 kde_num_batches = n_qw_samples // kde_batch_size
                 for b in range(kde_num_batches):
@@ -477,9 +568,11 @@ if __name__ == "__main__":
                 point_prob /= kde_num_batches
                 point_prob = np.reshape(point_prob, w0_grid.shape)
 
-                plt.subplot(3, 3, 5)
+                # plt.subplot(3, 3, 5)
+                plt.figure()
                 contourf(w0_grid, w1_grid, point_prob)
-                plt.title('Implicit posterior KDE')
+                # plt.title('Implicit posterior KDE')
+                plt.savefig('implicit_contour.pdf')
 
-                plt.show()
+                # plt.show()
                 exit(0)

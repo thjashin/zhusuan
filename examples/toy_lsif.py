@@ -100,9 +100,10 @@ if __name__ == "__main__":
         # h: [n_basis]
         return tf.reduce_mean(phi(w, w_basis, kernel_width), 0)
 
-    def optimal_alpha(qw_samples, pw_samples, kernel_width):
-        H_ = H(pw_samples, qw_samples, kernel_width)
-        h_ = h(qw_samples, qw_samples, kernel_width)
+    def optimal_alpha(qw_samples, pw_samples, w_basis, kernel_width):
+        H_ = H(pw_samples, w_basis, kernel_width)
+        h_ = h(qw_samples, w_basis, kernel_width)
+        K = phi(w_basis, w_basis, kernel_width)
         alpha = tf.matmul(
             tf.matrix_inverse(H_ + lambda_ * tf.eye(tf.shape(H_)[0])),
             tf.expand_dims(h_, 1))
@@ -129,9 +130,9 @@ if __name__ == "__main__":
         w_samples = tf.concat([qw_samples, pw_samples], axis=0)
         w_basis = qw_samples
         kernel_width = heuristic_kernel_width(w_samples, w_basis)
-        alpha = optimal_alpha(qw_samples, pw_samples, kernel_width)
+        alpha = optimal_alpha(qw_samples, pw_samples, w_basis, kernel_width)
         # phi_x: [N, n_basis]
-        phi_x = phi(x, qw_samples, kernel_width)
+        phi_x = phi(x, w_basis, kernel_width)
         ratio = tf.reduce_sum(tf.expand_dims(alpha, 0) * phi_x, 1)
         # ratio = tf.maximum(0., ratio)
         # ratio: [N]
@@ -179,12 +180,12 @@ if __name__ == "__main__":
         # Plot 2: True ratio vs. estimated ratio (LSIF)
         ax = plt.subplot(2, 1, 2)
         # normalized true ratio analytic
-        r_mean = (q_mean * q_precision - p_mean * p_precision) / (
-            q_precision - p_precision)
-        r_precision = q_precision - p_precision
-        r_std = np.sqrt(1. / r_precision)
-        true_r_analytic = stats.norm.pdf(xs, loc=r_mean, scale=r_std)
-        ax.plot(xs, true_r_analytic, label="Normalized true q/p")
+        # r_mean = (q_mean * q_precision - p_mean * p_precision) / (
+        #     q_precision - p_precision)
+        # r_precision = q_precision - p_precision
+        # r_std = np.sqrt(1. / r_precision)
+        # true_r_analytic = stats.norm.pdf(xs, loc=r_mean, scale=r_std)
+        # ax.plot(xs, true_r_analytic, label="Normalized true q/p")
         # True ratio
         ax.plot(xs, true_r, label="True q/p")
         # Estimated ratio (LSIF)
