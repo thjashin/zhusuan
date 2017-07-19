@@ -106,7 +106,6 @@ def main():
         learning_rate = 0.001
         max_grad_norm = 5
         num_layers = 2
-        num_steps = 20
         max_epoch = 4
         max_max_epoch = 13
         keep_prob = 1.0
