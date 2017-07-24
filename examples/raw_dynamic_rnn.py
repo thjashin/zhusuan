@@ -65,17 +65,20 @@ def rnn(config, cell, input_data, seq_len):
 
 
 class Model:
-    def __init__(self, x, y, seq_len, config):
-        self.x = x
-        self.y = y
-        self.seq_len = seq_len
+    def __init__(self, config):
+        # x: [batch_size, seq_len]
+        self.x = tf.placeholder(tf.int32, [None, None])
+        # y: [batch_size,]
+        self.y = tf.placeholder(tf.float32, [None])
+        # seq_len: [batch_size,]
+        self.seq_len = tf.placeholder(tf.int32, [None])
         cell = LSTMCell(128, forget_bias=0.)
-        self.logits = rnn(config, cell, x, seq_len)
-        loss = tf.nn.sigmoid_cross_entropy_with_logits(labels=y,
+        self.logits = rnn(config, cell, self.x, self.seq_len)
+        loss = tf.nn.sigmoid_cross_entropy_with_logits(labels=self.y,
                                                        logits=self.logits)
         self.loss = tf.reduce_mean(loss)
         self.accuracy = tf.reduce_mean(
-            tf.to_float(tf.equal(y, tf.to_float(tf.less(0., self.logits)))))
+            tf.to_float(tf.equal(self.y, tf.to_float(tf.less(0., self.logits)))))
 
 
 def pad_sequences(seqs, max_len=None):
@@ -120,6 +123,8 @@ def run_epoch(sess, model, data, config, train_op=None):
 
 
 def main():
+    tf.set_random_seed(1234)
+
     class SmallConfig(object):
         """Small config."""
         init_scale = 0.1
@@ -140,17 +145,10 @@ def main():
     print('train:', len(x_train))
     print('test:', len(x_test))
 
-    # x: [batch_size, seq_len]
-    x = tf.placeholder(tf.int32, [None, None])
-    # y: [batch_size,]
-    y = tf.placeholder(tf.float32, [None])
-    # seq_len: [batch_size,]
-    seq_len = tf.placeholder(tf.int32, [None])
-
     initializer = tf.random_uniform_initializer(-config.init_scale,
                                                 config.init_scale)
     with tf.variable_scope("Model", initializer=initializer):
-        model = Model(x, y, seq_len, config)
+        model = Model(config)
 
     learning_rate = tf.Variable(0.0, trainable=False)
     new_lr = tf.placeholder(tf.float32, shape=[], name='new_lr')
