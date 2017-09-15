@@ -144,8 +144,8 @@ class EvidenceLowerBoundObjective(VariationalObjective):
         return -self.tensor
 
     def reinforce(self,
-                  baseline=None,
                   variance_reduction=True,
+                  baseline=None,
                   decay=0.8):
         """
         Implements the score function gradient estimator for the ELBO, with
@@ -161,11 +161,17 @@ class EvidenceLowerBoundObjective(VariationalObjective):
             property of each reparameterizable latent `StochasticTensor` must
             be set False.
 
+        :param variance_reduction: Bool. Whether to use variance reduction.
+            By default will subtract the learning signal with a moving mean
+            estimation of it. Users can pass an additional customized baseline
+            using the baseline argument, in that way the returned will be a
+            tuple of costs, the former for the gradient estimator, the latter
+            for adapting the baseline.
         :param baseline: A Tensor that can broadcast to match the shape
             returned by `log_joint`. A trainable estimation for the scale of
             the elbo value, which is typically dependent on observed values,
-            e.g., a neural network with observed values as inputs.
-        :param variance_reduction: Bool. Whether to use variance reduction.
+            e.g., a neural network with observed values as inputs. This will be
+            additional.
         :param decay: Float. The moving average decay for variance
             normalization.
 
@@ -179,7 +185,6 @@ class EvidenceLowerBoundObjective(VariationalObjective):
             baseline_cost = 0.5 * tf.square(
                 tf.stop_gradient(l_signal) - baseline)
             l_signal = l_signal - baseline
-            cost += baseline_cost
 
         if variance_reduction:
             # TODO: extend to non-scalar.
@@ -199,7 +204,12 @@ class EvidenceLowerBoundObjective(VariationalObjective):
             self._log_joint_term()
         if self._axis is not None:
             cost = tf.reduce_mean(cost, self._axis)
-        return cost
+            if baseline is not None:
+                baseline_cost = tf.reduce_mean(baseline_cost, self._axis)
+
+        if baseline is not None:
+            return cost, baseline_cost
+        else: return cost
 
 
 def elbo(log_joint, observed, latent, axis=None):
