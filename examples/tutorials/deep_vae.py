@@ -29,7 +29,7 @@ def main():
     n_layers = 3
     n_hidden = 200
     # 'logstd' will lead to NaN when n_layers >= 3 while 'std' remains stable.
-    type = 'std'
+    type = 'logstd'
     # type = 'std'
 
     @zs.reuse('model')
