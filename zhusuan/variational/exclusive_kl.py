@@ -179,7 +179,6 @@ class EvidenceLowerBoundObjective(VariationalObjective):
             minimize.
         """
         l_signal = self._log_joint_term() + self._entropy_term()
-        cost = 0.
 
         if baseline is not None:
             baseline_cost = 0.5 * tf.square(
@@ -200,7 +199,7 @@ class EvidenceLowerBoundObjective(VariationalObjective):
             with tf.control_dependencies([update_mean]):
                 l_signal = tf.identity(l_signal)
 
-        cost += tf.stop_gradient(l_signal) * self._entropy_term() - \
+        cost = tf.stop_gradient(l_signal) * self._entropy_term() - \
             self._log_joint_term()
         if self._axis is not None:
             cost = tf.reduce_mean(cost, self._axis)
