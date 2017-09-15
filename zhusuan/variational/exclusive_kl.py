@@ -145,7 +145,7 @@ class EvidenceLowerBoundObjective(VariationalObjective):
 
     def reinforce(self,
                   baseline=None,
-                  variance_normalization=False,
+                  variance_reduction=True,
                   decay=0.8):
         """
         Implements the score function gradient estimator for the ELBO, with
@@ -165,8 +165,7 @@ class EvidenceLowerBoundObjective(VariationalObjective):
             returned by `log_joint`. A trainable estimation for the scale of
             the elbo value, which is typically dependent on observed values,
             e.g., a neural network with observed values as inputs.
-        :param variance_normalization: Bool. Whether to use variance
-            normalization.
+        :param variance_reduction: Bool. Whether to use variance reduction.
         :param decay: Float. The moving average decay for variance
             normalization.
 
@@ -182,27 +181,18 @@ class EvidenceLowerBoundObjective(VariationalObjective):
             l_signal = l_signal - baseline
             cost += baseline_cost
 
-        if variance_normalization:
-            # TODO: extend to non-scalar, add variance_reduction option which
-            # is default true and use a moving average baseline.
-            # remove variance normalization which introduces bias.
+        if variance_reduction:
+            # TODO: extend to non-scalar.
             bc = tf.reduce_mean(l_signal)
-            bv = tf.reduce_mean(tf.square(l_signal - bc))
             moving_mean = tf.get_variable(
                 'moving_mean', shape=[],
                 initializer=tf.constant_initializer(0.),
                 trainable=False)
-            moving_variance = tf.get_variable(
-                'moving_variance', shape=[],
-                initializer=tf.constant_initializer(1.), trainable=False)
 
             update_mean = moving_averages.assign_moving_average(
                 moving_mean, bc, decay=decay)
-            update_variance = moving_averages.assign_moving_average(
-                moving_variance, bv, decay=decay)
-            l_signal = (l_signal - moving_mean) / tf.maximum(
-                1., tf.sqrt(moving_variance))
-            with tf.control_dependencies([update_mean, update_variance]):
+            l_signal = l_signal - moving_mean
+            with tf.control_dependencies([update_mean]):
                 l_signal = tf.identity(l_signal)
 
         cost += tf.stop_gradient(l_signal) * self._entropy_term() - \
