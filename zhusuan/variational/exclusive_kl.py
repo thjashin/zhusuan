@@ -201,6 +201,7 @@ class EvidenceLowerBoundObjective(VariationalObjective):
 
         cost = tf.stop_gradient(l_signal) * self._entropy_term() - \
             self._log_joint_term()
+
         if self._axis is not None:
             cost = tf.reduce_mean(cost, self._axis)
             if baseline is not None:
@@ -208,7 +209,8 @@ class EvidenceLowerBoundObjective(VariationalObjective):
 
         if baseline is not None:
             return cost, baseline_cost
-        else: return cost
+        else:
+            return cost
 
 
 def elbo(log_joint, observed, latent, axis=None):

@@ -153,9 +153,9 @@ def rws(log_joint, observed, latent, axis=None):
 def nvil(log_joint,
          observed,
          latent,
-         variance_reduction=True,
          baseline=None,
          decay=0.8,
+         variance_normalization=False,
          axis=None):
     """
     Implements the variance reduced score function estimator for gradients
@@ -173,11 +173,11 @@ def nvil(log_joint,
     :param latent: A dictionary of ``(string, (Tensor, Tensor))``) pairs.
         Mapping from names of latent `StochasticTensor` s to their samples and
         log probabilities.
-    :param variance_reduction: Whether to use variance reduction.
     :param baseline: A Tensor that can broadcast to match the shape returned
         by `log_joint`. A trainable estimation for the scale of the
         variational lower bound, which is typically dependent on observed
         values, e.g., a neural network with observed values as inputs.
+    :param variance_normalization: Whether to use variance normalization.
     :param decay: Float. The moving average decay for variance normalization.
     :param axis: The sample dimension(s) to reduce when computing the
         outer expectation in variational lower bound. If `None`, no dimension
@@ -207,17 +207,24 @@ def nvil(log_joint,
         l_signal = l_signal - baseline
         cost += baseline_cost
 
-    if variance_reduction is True:
+    if variance_normalization is True:
         # TODO: extend to non-scalar
         bc = tf.reduce_mean(l_signal)
+        bv = tf.reduce_mean(tf.square(l_signal - bc))
         moving_mean = tf.get_variable(
             'moving_mean', shape=[], initializer=tf.constant_initializer(0.),
             trainable=False)
+        moving_variance = tf.get_variable(
+            'moving_variance', shape=[],
+            initializer=tf.constant_initializer(1.), trainable=False)
 
         update_mean = moving_averages.assign_moving_average(
             moving_mean, bc, decay=decay)
-        l_signal = l_signal - moving_mean
-        with tf.control_dependencies([update_mean]):
+        update_variance = moving_averages.assign_moving_average(
+            moving_variance, bv, decay=decay)
+        l_signal = (l_signal - moving_mean) / tf.maximum(
+            1., tf.sqrt(moving_variance))
+        with tf.control_dependencies([update_mean, update_variance]):
             l_signal = tf.identity(l_signal)
 
     fake_log_joint_cost = -log_joint_value
